@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Lightweight desktop Minecraft server panel"
 license = "MIT"
-repository = "https://github.com/Q9550xRX570/panelmc"
-homepage = "https://github.com/Q9550xRX570/panelmc"
+repository = "https://github.com/Q9550xRX570/PanelMC"
+homepage = "https://github.com/Q9550xRX570/PanelMC"
 build = "build.rs"
 
 [dependencies]
