@@ -1,0 +1,9 @@
+# Old x86 CPUs (Q9550 class): SSE2 only. Do not apply these flags on ARM.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-cpu=x86-64", "-C", "target-feature=-sse4.2,-avx,-avx2"]
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-cpu=x86-64", "-C", "target-feature=-sse4.2,-avx,-avx2"]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64", "-C", "target-feature=-sse4.2,-avx,-avx2"]

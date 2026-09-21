@@ -1,0 +1,2304 @@
+import { ScrollView } from "std-widgets.slint";
+import "./fonts/Play-Regular.ttf";
+import "./fonts/Play-Bold.ttf";
+
+export struct ServerCardItem {
+    id: string,
+    name: string,
+    software: string,
+    version: string,
+    port: string,
+    ram: string,
+    status: string,
+    is-running: bool,
+}
+
+export struct FileItem {
+    name: string,
+    is-dir: bool,
+    size: string,
+}
+
+export struct PlayerItem {
+    name: string,
+    uuid: string,
+    is-op: bool,
+    is-whitelisted: bool,
+}
+
+export struct WorldItem {
+    name: string,
+    kind: string,
+    exists: bool,
+}
+
+export struct BackupItem {
+    name: string,
+    size: string,
+}
+
+export struct ModItem {
+    title: string,
+    description: string,
+    downloads: string,
+    slug: string,
+    installed: bool,
+    has-icon: bool,
+    icon: image,
+}
+
+export struct VersionRow {
+    v1: string, has1: bool,
+    v2: string, has2: bool,
+    v3: string, has3: bool,
+    v4: string, has4: bool,
+}
+
+export global AppTheme {
+    in-out property <bool> is-dark: true;
+    out property <bool> light: !is-dark;
+
+    // Chrome never inverts — Aternos header + sidebar stay dark grey.
+    out property <color> header: #2D3943;
+    out property <color> sidebar: #2D3943;
+    out property <color> chrome: #f0f0f0;
+    out property <color> nav-active: #40505c;
+    out property <color> nav-hover: #47535D;
+
+    out property <color> page: is-dark ? #161c21 : #F0F0F0;
+    out property <color> card: #2D3943;
+    out property <color> inset: #40505c;
+    // Page titles follow theme. Text sitting on dark cards/insets stays light.
+    out property <color> text: is-dark ? #f0f0f0 : #2D3943;
+    out property <color> muted: is-dark ? #A4A4A4 : #47535D;
+    out property <color> on-card: #f0f0f0;
+    out property <color> on-card-muted: #A4A4A4;
+    out property <color> line: #40505c;
+    out property <length> line-w: 0px;
+
+    out property <color> nav: #f0f0f0;
+
+    out property <color> btn: is-dark ? #2b87d3 : #d0d0d0;
+    out property <color> btn-hover: is-dark ? #277cc2 : #c2c2c2;
+    out property <color> btn-press: is-dark ? #277cc2 : #2b87d3;
+    out property <color> btn-text: is-dark ? #f0f0f0 : #2D3943;
+    out property <color> btn-dark: is-dark ? #40505c : #d0d0d0;
+    out property <color> btn-dark-hover: is-dark ? #47535D : #c2c2c2;
+    out property <color> btn-dark-press: is-dark ? #47535D : #40505c;
+    out property <color> btn-frame: is-dark ? #2b87d3 : #b5b5b5;
+    out property <length> btn-frame-w: is-dark ? 0px : 1px;
+}
+
+// --- ATERNOS-STYLE CONTROLS ---
+
+component AtInput inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder-text: "";
+    callback accepted;
+
+    height: 40px;
+    vertical-stretch: 0;
+    border-radius: 2px;
+    clip: true;
+    background: AppTheme.inset;
+    border-width: AppTheme.line-w;
+    border-color: AppTheme.line;
+    forward-focus: input;
+
+    // Behind the TextInput. Must set x/y or Slint stacks this below the field
+    // (typed text "falls" out of view and the placeholder never hides).
+    Text {
+        x: 12px;
+        y: 0px;
+        width: parent.width - 24px;
+        height: 100%;
+        overflow: clip;
+        horizontal-alignment: left;
+        vertical-alignment: center;
+        visible: input.text == "" && input.preedit-text == "";
+        text: root.placeholder-text;
+        color: AppTheme.on-card-muted;
+        font-size: 14px;
+        font-family: "Play";
+        accessible-role: none;
+    }
+
+    input := TextInput {
+        x: 12px;
+        y: 0px;
+        width: parent.width - 24px;
+        height: 100%;
+        single-line: true;
+        horizontal-alignment: left;
+        vertical-alignment: center;
+        color: AppTheme.on-card;
+        font-size: 14px;
+        font-family: "Play";
+        accepted => { root.accepted(); }
+    }
+}
+
+component DashboardIcon inherits Path {
+    in property <color> icon-color;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z";
+    fill: icon-color;
+}
+
+component TerminalIcon inherits Path {
+    in property <color> icon-color;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z";
+    fill: icon-color;
+}
+
+component SoftwareIcon inherits Path {
+    in property <color> icon-color;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5";
+    fill: icon-color;
+}
+
+component CoffeeIcon inherits Path {
+    in property <color> icon-color;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 5h-2V5h2v3zM4 19h16v2H4z";
+    fill: icon-color;
+}
+
+component SlidersIcon inherits Path {
+    in property <color> icon-color;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z";
+    fill: icon-color;
+}
+
+component FolderIcon inherits Path {
+    in property <color> icon-color;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z";
+    fill: icon-color;
+}
+
+component PackageIcon inherits Path {
+    in property <color> icon-color;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M12 2l-8 4.5v9L12 20l8-4.5v-9L12 2zm0 2.3l5.5 3.1-2.5 1.4-5.5-3.1 2.5-1.4zM6 8.7l5 2.8v5.8l-5-2.8V8.7zm7 8.6v-5.8l5-2.8v5.8l-5 2.8z";
+    fill: icon-color;
+}
+
+component GearIcon inherits Path {
+    in property <color> icon-color;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z";
+    fill: icon-color;
+}
+
+component PeopleIcon inherits Path {
+    in property <color> icon-color;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z";
+    fill: icon-color;
+}
+
+component GlobeIcon inherits Path {
+    in property <color> icon-color;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z";
+    fill: icon-color;
+}
+
+component HistoryIcon inherits Path {
+    in property <color> icon-color;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z";
+    fill: icon-color;
+}
+
+component PuzzleIcon inherits Path {
+    in property <color> icon-color;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M20.5 11H19V7c0-1.1-.9-2-2-2h-4V3.5C13 2.12 11.88 1 10.5 1S8 2.12 8 3.5V5H4c-1.1 0-1.99.9-1.99 2v3.8H3.5c1.49 0 2.7 1.21 2.7 2.7s-1.21 2.7-2.7 2.7H2V20c0 1.1.9 2 2 2h3.8v-1.5c0-1.49 1.21-2.7 2.7-2.7s2.7 1.21 2.7 2.7V22H17c1.1 0 2-.9 2-2v-4h1.5c1.38 0 2.5-1.12 2.5-2.5S21.88 11 20.5 11z";
+    fill: icon-color;
+}
+
+component LogIcon inherits Path {
+    in property <color> icon-color;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z";
+    fill: icon-color;
+}
+
+component PersonIcon inherits Path {
+    in property <color> icon-color;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z";
+    fill: icon-color;
+}
+
+component TagIcon inherits Path {
+    in property <color> icon-color: #f0f0f0;
+    width: 13px; height: 13px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M21.41 11.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.1 0-2 .9-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58s1.05-.22 1.41-.59l7-7c.37-.36.59-.86.59-1.41s-.23-1.06-.59-1.42zM5.5 7C4.67 7 4 6.33 4 5.5S4.67 4 5.5 4 7 4.67 7 5.5 6.33 7 5.5 7z";
+    fill: icon-color;
+}
+
+component PlayIcon inherits Path {
+    in property <color> icon-color: #f0f0f0;
+    width: 18px; height: 18px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M8 5v14l11-7z";
+    fill: icon-color;
+}
+
+component StopIcon inherits Path {
+    in property <color> icon-color: #f0f0f0;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M6 6h12v12H6z";
+    fill: icon-color;
+}
+
+component PlugIcon inherits Path {
+    in property <color> icon-color: #f0f0f0;
+    width: 14px; height: 14px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M16.01 7L16 3h-2v4h-4V3H8v4h-.01C7 6.99 6 7.99 6 8.99v5.49L9.5 18v3h5v-3l3.5-3.51v-5.5c0-1-1-2-1.99-1.99z";
+    fill: icon-color;
+}
+
+component DownloadIcon inherits Path {
+    in property <color> icon-color: #f0f0f0;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z";
+    fill: icon-color;
+}
+
+component PowerIcon inherits Path {
+    in property <color> icon-color: #f0f0f0;
+    width: 16px; height: 16px;
+    viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+    commands: "M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z";
+    fill: icon-color;
+}
+
+component BrandMark inherits Rectangle {
+    width: 26px;
+    height: 26px;
+    border-radius: 3px;
+    border-width: 2px;
+    border-color: AppTheme.chrome;
+    background: transparent;
+
+    VerticalLayout {
+        padding: 4px;
+        spacing: 3px;
+        HorizontalLayout {
+            spacing: 3px;
+            Rectangle { width: 6px; height: 6px; border-radius: 1px; background: AppTheme.chrome; }
+            Rectangle { width: 6px; height: 6px; border-radius: 1px; background: AppTheme.chrome; }
+        }
+        HorizontalLayout {
+            spacing: 3px;
+            Rectangle { width: 6px; height: 6px; border-radius: 1px; background: AppTheme.chrome; }
+            Rectangle { width: 6px; height: 6px; border-radius: 1px; background: AppTheme.chrome; }
+        }
+    }
+}
+
+component AtToggle inherits Rectangle {
+    in property <bool> checked: false;
+    callback toggled;
+
+    width: 44px; height: 32px; border-radius: 2px;
+    vertical-stretch: 0;
+    background: checked ? #1FD78D : #F62451;
+    animate background { duration: 80ms; }
+
+    TouchArea { clicked => { root.toggled(); } }
+
+    Text {
+        width: 100%; height: 100%;
+        text: root.checked ? "✔" : "✖";
+        color: #f0f0f0; font-size: 15px; font-weight: 700; font-family: "Play";
+        vertical-alignment: center; horizontal-alignment: center;
+    }
+}
+
+component AtStepper inherits Rectangle {
+    in-out property <int> value: 20;
+    callback changed(int);
+
+    width: 84px; height: 30px; border-radius: 2px; clip: true;
+    vertical-stretch: 0;
+    background: #40505c;
+
+    HorizontalLayout {
+        width: 100%; height: 100%;
+        alignment: space-between;
+        TouchArea {
+            width: 24px;
+            clicked => { if (root.value > 1) { root.value -= 1; root.changed(root.value); } }
+            Text { width: 100%; height: 100%; text: "-"; color: #f0f0f0; font-size: 16px; font-weight: 700; font-family: "Play"; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        Text { text: "" + root.value; color: #f0f0f0; font-size: 13px; font-weight: 700; font-family: "Play"; vertical-alignment: center; horizontal-alignment: center; }
+        TouchArea {
+            width: 24px;
+            clicked => { root.value += 1; root.changed(root.value); }
+            Text { width: 100%; height: 100%; text: "+"; color: #f0f0f0; font-size: 16px; font-weight: 700; font-family: "Play"; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+}
+
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <string> icon: "server";
+    in property <bool> active: false;
+    callback clicked;
+
+    height: 40px;
+    vertical-stretch: 0;
+    background: active ? AppTheme.nav-active : (touch.has-hover ? AppTheme.nav-hover : transparent);
+    animate background { duration: 80ms; }
+
+    touch := TouchArea { clicked => { root.clicked(); } }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 16px; padding-right: 12px; spacing: 10px;
+        VerticalLayout {
+            width: 18px;
+            height: 100%;
+            alignment: center;
+            Rectangle {
+                width: 18px; height: 18px; clip: true;
+                if root.icon == "list" : DashboardIcon { width: 16px; height: 16px; icon-color: AppTheme.chrome; x: 1px; y: 1px; }
+                if root.icon == "server" : PowerIcon { width: 16px; height: 16px; icon-color: AppTheme.chrome; x: 1px; y: 1px; }
+                if root.icon == "console" : TerminalIcon { width: 16px; height: 16px; icon-color: AppTheme.chrome; x: 1px; y: 1px; }
+                if root.icon == "options" : SlidersIcon { width: 16px; height: 16px; icon-color: AppTheme.chrome; x: 1px; y: 1px; }
+                if root.icon == "software" : GearIcon { width: 16px; height: 16px; icon-color: AppTheme.chrome; x: 1px; y: 1px; }
+                if root.icon == "java" : CoffeeIcon { width: 16px; height: 16px; icon-color: AppTheme.chrome; x: 1px; y: 1px; }
+                if root.icon == "files" : FolderIcon { width: 16px; height: 16px; icon-color: AppTheme.chrome; x: 1px; y: 1px; }
+                if root.icon == "plugins" : PuzzleIcon { width: 16px; height: 16px; icon-color: AppTheme.chrome; x: 1px; y: 1px; }
+                if root.icon == "settings" : GearIcon { width: 16px; height: 16px; icon-color: AppTheme.chrome; x: 1px; y: 1px; }
+                if root.icon == "players" : PeopleIcon { width: 16px; height: 16px; icon-color: AppTheme.chrome; x: 1px; y: 1px; }
+                if root.icon == "worlds" : GlobeIcon { width: 16px; height: 16px; icon-color: AppTheme.chrome; x: 1px; y: 1px; }
+                if root.icon == "backups" : HistoryIcon { width: 16px; height: 16px; icon-color: AppTheme.chrome; x: 1px; y: 1px; }
+                if root.icon == "logs" : LogIcon { width: 16px; height: 16px; icon-color: AppTheme.chrome; x: 1px; y: 1px; }
+                if root.icon == "access" : PersonIcon { width: 16px; height: 16px; icon-color: AppTheme.chrome; x: 1px; y: 1px; }
+            }
+        }
+        Text {
+            text: root.label;
+            color: AppTheme.chrome;
+            font-size: 13px;
+            font-weight: 700;
+            font-family: "Play";
+            height: 100%;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.active : Text {
+            text: ">";
+            color: AppTheme.chrome;
+            font-size: 16px;
+            font-weight: 700;
+            font-family: "Play";
+            height: 100%;
+            vertical-alignment: center;
+            width: 14px;
+        }
+    }
+}
+
+component AtBtn inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> destructive: false;
+    in property <bool> success: false;
+    in property <bool> warn: false;
+    in property <bool> accent: false;
+    in property <bool> enabled: true;
+    in property <bool> dark: false;
+    in property <bool> inverted: false;
+    callback clicked;
+
+    height: 34px;
+    vertical-stretch: 0;
+    border-radius: 2px;
+    clip: true;
+    background: !root.enabled ? #7a7a7a : (root.destructive ? #F62451 : (root.success ? #1FD78D : (root.warn ? #e67e22 : ((root.accent || root.primary) ? #2b87d3 : (root.inverted ? #f0f0f0 : (root.dark ? #5b6a76 : #e8e8e8))))));
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        x: 10px;
+        width: parent.width - 20px;
+        height: 100%;
+        text: root.text;
+        color: (root.destructive || root.success || root.warn || root.accent || root.primary || root.dark || !root.enabled) ? #f0f0f0 : #2D3943;
+        font-size: 13px;
+        font-weight: 700;
+        font-family: "Play";
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+component VMid inherits Rectangle {
+    height: 100%;
+    vertical-stretch: 1;
+    VerticalLayout {
+        height: 100%;
+        alignment: center;
+        @children
+    }
+}
+
+component ConnectBtn inherits Rectangle {
+    in property <string> text;
+    callback clicked;
+
+    height: 28px;
+    vertical-stretch: 0;
+    border-radius: 2px;
+    background: #f0f0f0;
+    clip: true;
+
+    TouchArea { clicked => { root.clicked(); } }
+
+    VerticalLayout {
+        height: 100%;
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            spacing: 6px;
+            height: 16px;
+            padding-left: 12px;
+            padding-right: 14px;
+            VerticalLayout {
+                width: 14px; height: 16px; alignment: center;
+                PlugIcon { width: 14px; height: 14px; icon-color: #2D3943; }
+            }
+            Text {
+                text: root.text;
+                color: #2D3943;
+                font-size: 13px;
+                font-weight: 700;
+                font-family: "Play";
+                height: 16px;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+component HugeActionBtn inherits Rectangle {
+    in property <string> text;
+    in property <bool> is-stop: false;
+    callback clicked;
+
+    width: 180px;
+    height: 48px;
+    vertical-stretch: 0;
+    border-radius: 2px;
+    clip: true;
+    background: is-stop ? (touch.has-hover ? #e2214a : #F62451) : (touch.has-hover ? #1cc582 : #1FD78D);
+    animate background { duration: 50ms; }
+
+    touch := TouchArea { clicked => { root.clicked(); } }
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            spacing: 10px;
+            height: 24px;
+            if !root.is-stop : VerticalLayout {
+                width: 18px; height: 24px; alignment: center;
+                PlayIcon { width: 18px; height: 18px; icon-color: #f0f0f0; }
+            }
+            if root.is-stop : VerticalLayout {
+                width: 14px; height: 24px; alignment: center;
+                StopIcon { width: 14px; height: 14px; icon-color: #f0f0f0; }
+            }
+            Text {
+                text: root.text;
+                color: #f0f0f0;
+                font-size: 18px; font-weight: 700; font-family: "Play";
+                height: 24px;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+component ServerRowCard inherits Rectangle {
+    in property <string> server-name;
+    in property <string> server-id;
+    in property <string> software-info;
+    in property <bool> is-running: false;
+    in property <string> delete-label: "Sil";
+    callback clicked;
+    callback delete-clicked;
+
+    height: 88px;
+    vertical-stretch: 0;
+    border-radius: 2px;
+    background: AppTheme.card;
+
+    card_touch := TouchArea {
+        clicked => { root.clicked(); }
+
+        VerticalLayout {
+            alignment: center;
+            padding-left: 14px; padding-right: 12px;
+            HorizontalLayout {
+                spacing: 12px;
+                Rectangle {
+                    width: 40px; height: 40px; border-radius: 2px;
+                    background: AppTheme.inset;
+                    DashboardIcon {
+                        width: 18px; height: 18px; icon-color: #2b87d3;
+                        x: (parent.width - 18px) / 2;
+                        y: (parent.height - 18px) / 2;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center; spacing: 4px; horizontal-stretch: 1;
+                    Text {
+                        text: root.server-name;
+                        height: 20px;
+                        font-size: 16px; font-weight: 700; font-family: "Play"; color: #f0f0f0;
+                        vertical-alignment: center; overflow: elide;
+                    }
+                    Text {
+                        text: root.software-info;
+                        height: 16px;
+                        font-size: 12px; font-weight: 700; font-family: "Play"; color: #2b87d3;
+                        vertical-alignment: center; overflow: elide;
+                    }
+                }
+                VerticalLayout {
+                    width: 52px;
+                    alignment: center; spacing: 4px;
+                    HorizontalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 10px; height: 10px; border-radius: 5px;
+                            background: root.is-running ? #1fd78d : #F62451;
+                        }
+                    }
+                    Text {
+                        text: root.is-running ? "Online" : "Offline";
+                        height: 14px;
+                        color: root.is-running ? #1fd78d : #F62451;
+                        font-size: 11px; font-weight: 700; font-family: "Play";
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
+                }
+                AtBtn {
+                    text: root.delete-label; destructive: true; width: 64px; height: 32px;
+                    enabled: !root.is-running;
+                    clicked => { root.delete-clicked(); }
+                }
+            }
+        }
+    }
+}
+
+component SoftwareCard inherits Rectangle {
+    in property <string> title;
+    in property <string> badge-text;
+    in property <bool> has-badge: true;
+    in property <bool> is-selected: false;
+    callback clicked;
+
+    height: 88px; border-radius: 2px;
+    vertical-stretch: 0;
+    background: is-selected ? #2b87d3 : AppTheme.card;
+    border-width: AppTheme.line-w;
+    border-color: is-selected ? #2b87d3 : AppTheme.line;
+
+    card_touch := TouchArea { clicked => { root.clicked(); } }
+
+    VerticalLayout {
+        padding: 10px; spacing: 6px;
+        HorizontalLayout {
+            alignment: end;
+            if root.has-badge : Rectangle {
+                height: 18px; border-radius: 2px;
+                background: root.is-selected ? AppTheme.header : AppTheme.inset;
+                HorizontalLayout {
+                    padding-left: 6px; padding-right: 6px;
+                    Text { text: root.badge-text; font-size: 10px; font-weight: 700; font-family: "Play"; color: #f0f0f0; vertical-alignment: center; }
+                }
+            }
+        }
+        HorizontalLayout {
+            height: 100%;
+            alignment: center;
+            @children
+        }
+        Text {
+            text: root.title;
+            color: #f0f0f0;
+            font-size: 13px;
+            font-weight: 700;
+            font-family: "Play";
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+component VersionTagPill inherits Rectangle {
+    in property <string> version;
+    in property <bool> active: false;
+    callback clicked;
+
+    height: 32px; border-radius: 2px; clip: true;
+    background: active ? #2b87d3 : (tag_touch.has-hover ? #1cc582 : #1FD78D);
+    animate background { duration: 80ms; }
+
+    tag_touch := TouchArea { clicked => { root.clicked(); } }
+
+    HorizontalLayout {
+        width: 100%; height: 100%;
+        alignment: center; spacing: 8px;
+        TagIcon { icon-color: #f0f0f0; }
+        Text { text: root.version; color: #f0f0f0; font-size: 13px; font-weight: 700; font-family: "Play"; vertical-alignment: center; }
+    }
+}
+
+component InfoRow inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <string> action-text: "";
+    callback action-clicked;
+
+    height: 52px; vertical-stretch: 0; border-radius: 2px; background: AppTheme.card; clip: true;
+    border-width: AppTheme.line-w;
+    border-color: AppTheme.line;
+
+    HorizontalLayout {
+        width: 100%; height: 100%;
+        padding-left: 14px; padding-right: 10px; alignment: space-between;
+        VerticalLayout {
+            alignment: center; spacing: 2px; horizontal-stretch: 1;
+            Text { text: root.label; font-size: 11px; color: #A4A4A4; font-weight: 700; font-family: "Play"; overflow: elide; }
+            Text { text: root.value; font-size: 14px; font-weight: 700; font-family: "Play"; color: #f0f0f0; overflow: elide; }
+        }
+        if root.action-text != "" : VerticalLayout {
+            alignment: center;
+            AtBtn {
+                text: root.action-text; width: 88px; height: 30px;
+                clicked => { root.action-clicked(); }
+            }
+        }
+    }
+}
+
+component AtCheck inherits Rectangle {
+    in property <bool> checked: false;
+    callback toggled;
+
+    width: 22px; height: 22px; border-radius: 2px;
+    vertical-stretch: 0;
+    background: checked ? #1FD78D : #f0f0f0;
+    border-width: 1px;
+    border-color: checked ? #1FD78D : #9a9a9a;
+
+    TouchArea { clicked => { root.toggled(); } }
+
+    Text {
+        width: 100%; height: 100%;
+        text: root.checked ? "✔" : "";
+        color: #2D3943; font-size: 13px; font-weight: 700; font-family: "Play";
+        vertical-alignment: center; horizontal-alignment: center;
+    }
+}
+
+component OptionCard inherits Rectangle {
+    in property <string> title;
+    in property <string> hint;
+
+    height: 64px; vertical-stretch: 0; border-radius: 2px; background: AppTheme.card; horizontal-stretch: 1; clip: true;
+    border-width: AppTheme.line-w;
+    border-color: AppTheme.line;
+
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 10px; spacing: 8px; alignment: space-between;
+        VerticalLayout {
+            alignment: center; spacing: 2px; horizontal-stretch: 1;
+            Text { text: root.title; font-size: 13px; font-weight: 700; font-family: "Play"; color: #f0f0f0; overflow: elide; }
+            Text { text: root.hint; font-size: 10px; font-family: "Play"; color: #A4A4A4; overflow: elide; }
+        }
+        VerticalLayout {
+            alignment: center;
+            @children
+        }
+    }
+}
+
+// --- MAIN WINDOW ---
+export component MainWindow inherits Window {
+    width: 1100px;
+    height: 720px;
+    title: "PanelMC";
+    default-font-family: "Play";
+    default-font-size: 14px;
+    background: AppTheme.page;
+
+    in-out property <bool> is-dark-theme <=> AppTheme.is-dark;
+    in-out property <string> app-lang: "tr";
+
+    callback apply-theme(bool);
+    apply-theme(dark) => {
+        AppTheme.is-dark = dark;
+    }
+
+    property <color> c-header: AppTheme.header;
+    property <color> c-mark: AppTheme.inset;
+    property <color> c-hover: AppTheme.nav-hover;
+    property <color> c-bg-main: AppTheme.page;
+    property <color> c-bg-card: AppTheme.card;
+    property <color> c-bg-inset: AppTheme.inset;
+    property <color> c-border: AppTheme.line;
+    property <length> c-border-w: AppTheme.line-w;
+    property <color> c-text-primary: AppTheme.on-card;
+    property <color> c-text-secondary: AppTheme.on-card-muted;
+    property <color> c-page-title: AppTheme.text;
+    property <color> c-main: #2b87d3;
+    property <color> c-success: #1FD78D;
+    property <color> c-danger: #F62451;
+
+    property <string> t-servers: app-lang == "tr" ? "Sunucular" : "Servers";
+    property <string> t-create: app-lang == "tr" ? "+ Oluştur" : "+ Create";
+    property <string> t-overview: app-lang == "tr" ? "Sunucu" : "Server";
+    property <string> t-console: app-lang == "tr" ? "Konsol" : "Console";
+    property <string> t-software: app-lang == "tr" ? "Yazılım" : "Software";
+    property <string> t-java: "Java";
+    property <string> t-options: app-lang == "tr" ? "Ayarlar" : "Options";
+    property <string> t-files: app-lang == "tr" ? "Dosyalar" : "Files";
+    property <string> t-players: app-lang == "tr" ? "Oyuncular" : "Players";
+    property <string> t-worlds: app-lang == "tr" ? "Dünyalar" : "Worlds";
+    property <string> t-backups: app-lang == "tr" ? "Yedekler" : "Backups";
+    property <string> t-plugins: app-lang == "tr" ? "Eklentiler" : "Plugins";
+    property <string> t-mods: app-lang == "tr" ? "Modlar" : "Mods";
+    property <string> t-logs: app-lang == "tr" ? "Günlük" : "Log";
+    property <string> t-access: app-lang == "tr" ? "Erişim" : "Access";
+    property <string> t-settings: app-lang == "tr" ? "Uygulama" : "Account";
+    property <string> t-back: app-lang == "tr" ? "Sunucular" : "Servers";
+    property <string> t-theme-dark: app-lang == "tr" ? "Koyu" : "Dark";
+    property <string> t-theme-light: app-lang == "tr" ? "Açık" : "Light";
+    property <string> t-lang-tr: app-lang == "tr" ? "Türkçe" : "Turkish";
+    property <string> t-lang-en: app-lang == "tr" ? "İngilizce" : "English";
+    property <string> t-start: app-lang == "tr" ? "Başlat" : "Start";
+    property <string> t-stop: app-lang == "tr" ? "Durdur" : "Stop";
+    property <string> t-online: app-lang == "tr" ? "Online" : "Online";
+    property <string> t-offline: app-lang == "tr" ? "Kapalı" : "Offline";
+    property <string> t-connect: app-lang == "tr" ? "Bağlan" : "Connect";
+    property <string> t-cancel: app-lang == "tr" ? "İptal" : "Cancel";
+    property <string> t-save: app-lang == "tr" ? "Kaydet" : "Save";
+    property <string> t-change: app-lang == "tr" ? "Değiştir" : "Change";
+
+    in-out property <bool> in-server-view: false;
+    in-out property <int> active-tab: 0;
+
+    in-out property <[ServerCardItem]> servers-list: [];
+    in-out property <string> active-server-id: "";
+    in-out property <string> active-server-name: "";
+    in-out property <bool> show-create-modal: false;
+
+    in-out property <bool> server-running: false;
+    in-out property <string> server-status: "Durduruldu";
+    in-out property <string> server-ip: "127.0.0.1:25565";
+    in-out property <string> console-text: "[Sistem] Hazır.\n";
+    in-out property <bool> console-follow: true;
+    in-out property <string> log-file-text: "";
+    in-out property <string> server-error-message: "";
+
+    in-out property <string> active-java-info: "Java aranıyor...";
+    in-out property <string> active-server-selected-java: "java25";
+    in-out property <bool> has-java25: false;
+    in-out property <bool> has-java21: false;
+    in-out property <bool> has-java17: false;
+    in-out property <bool> is-downloading-java: false;
+    in-out property <float> java-download-progress: 0.0;
+    in-out property <string> java-download-details: "";
+
+    in-out property <int> software-subview: 0;
+    in-out property <string> selected-software: "Vanilla";
+    in-out property <string> selected-version: "1.20.4";
+    in-out property <[VersionRow]> version-rows: [];
+    property <bool> uses-plugins: selected-software == "Paper" || selected-software == "Purpur" || selected-software == "Spigot";
+    property <bool> uses-mods: selected-software == "Fabric" || selected-software == "Forge" || selected-software == "NeoForge";
+
+    in-out property <string> download-status: "Hazır";
+    in-out property <string> download-details: "";
+    in-out property <float> download-progress: 0.0;
+    in-out property <bool> is-downloading: false;
+
+    in-out property <[FileItem]> server-files: [];
+    in-out property <[PlayerItem]> player-list: [];
+    in-out property <string> player-status: "";
+    in-out property <[WorldItem]> world-list: [];
+    in-out property <[BackupItem]> backup-list: [];
+    in-out property <string> world-status: "";
+    in-out property <bool> world-optimize: false;
+    in-out property <bool> is-backing-up: false;
+    in-out property <string> cloud-folder: "";
+    in-out property <string> cloud-onedrive: "";
+    in-out property <string> cloud-gdrive: "";
+    in-out property <string> cloud-dropbox: "";
+    in-out property <string> cloud-status: "";
+    in-out property <bool> is-uploading-cloud: false;
+    in-out property <string> cloud-target: "folder";
+    in-out property <string> cloud-google-email: "";
+    in-out property <string> cloud-onedrive-email: "";
+    in-out property <string> cloud-google-client-id: "";
+    in-out property <string> cloud-google-secret: "";
+    in-out property <string> cloud-onedrive-client-id: "";
+    in-out property <string> cloud-login-status: "";
+    in-out property <bool> is-cloud-logging-in: false;
+
+    in-out property <string> plugin-source: "Modrinth";
+    in-out property <string> plugin-search-query: "";
+    in-out property <[ModItem]> mod-results: [];
+    in-out property <bool> is-searching-mods: false;
+    in-out property <string> mod-status-message: "";
+
+    in-out property <bool> prop-online-mode: false;
+    in-out property <bool> prop-pvp: true;
+    in-out property <bool> prop-flight: true;
+    in-out property <string> prop-difficulty: "easy";
+    in-out property <string> prop-gamemode: "survival";
+    in-out property <bool> prop-whitelist: false;
+    in-out property <int> prop-max-players: 20;
+    in-out property <int> prop-spawn-protection: 0;
+    in-out property <string> prop-resource-pack: "";
+    in-out property <string> prop-resource-pack-prompt: "";
+    in-out property <string> prop-resource-pack-sha1: "";
+    in-out property <bool> prop-force-gamemode: false;
+    in-out property <bool> prop-require-resource-pack: false;
+    in-out property <string> prop-timezone: "Europe/Istanbul";
+    in-out property <string> prop-save-status: "";
+
+    in-out property <string> server-ram: "2G";
+    in-out property <string> ram-amount: "2";
+    in-out property <string> ram-unit: "GB";
+    in-out property <string> server-port: "25565";
+
+    callback select-and-manage-server(string);
+    callback create-new-server(string, string);
+    callback delete-server(string);
+    callback refresh-servers-list();
+
+    callback start-server-clicked();
+    callback stop-server-clicked();
+    callback send-command(string);
+    callback open-software-versions(string);
+    callback select-version-and-install(string, string);
+    callback refresh-files();
+    callback open-server-folder();
+    callback refresh-players();
+    callback player-action(string, string);
+    callback refresh-worlds();
+    callback refresh-logs();
+    callback backup-worlds();
+    callback backup-and-upload();
+    callback reset-world(string);
+    callback restore-backup(string);
+    callback delete-backup(string);
+    callback upload-backup(string);
+    callback open-backups-folder();
+    callback save-cloud-settings();
+    callback pick-cloud-folder();
+    callback google-login();
+    callback google-logout();
+    callback onedrive-login();
+    callback onedrive-logout();
+    callback search-mods(string, string);
+    callback install-mod(string);
+    callback save-server-properties();
+    callback load-server-properties();
+    callback download-java-version(int);
+    callback set-active-server-java(string);
+    callback open-world-folder(string);
+    callback upload-world(string);
+    callback create-world(string);
+    callback optimize-world(string, bool);
+    callback pick-resource-pack();
+
+    VerticalLayout {
+        spacing: 0;
+
+        // TOP BAR
+        Rectangle {
+            height: 52px;
+            vertical-stretch: 0;
+            background: AppTheme.header;
+
+            HorizontalLayout {
+                padding-left: 16px; padding-right: 16px; spacing: 12px; alignment: space-between;
+
+                header_brand := TouchArea {
+                    clicked => {
+                        if (root.in-server-view) {
+                            root.in-server-view = false;
+                            root.refresh-servers-list();
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            BrandMark { }
+                            Text {
+                                text: "PanelMC";
+                                color: AppTheme.chrome;
+                                font-size: 18px;
+                                font-weight: 700;
+                                font-family: "Play";
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        if root.in-server-view : Rectangle {
+                            height: 32px; border-radius: 2px; background: root.server-running ? #1fd78d : #F62451;
+                            HorizontalLayout {
+                                width: 100%; height: 100%;
+                                padding-left: 10px; padding-right: 10px;
+                                alignment: center;
+                                Text {
+                                    text: root.server-running ? root.t-online : root.t-offline;
+                                    color: #f0f0f0; font-size: 13px; font-weight: 700; font-family: "Play";
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        AtBtn {
+                            text: AppTheme.is-dark ? root.t-theme-light : root.t-theme-dark;
+                            inverted: true; width: 72px; height: 32px;
+                            clicked => { root.apply-theme(!AppTheme.is-dark); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // SERVERS LIST
+        if !root.in-server-view : Rectangle {
+            background: root.c-bg-main;
+            VerticalLayout {
+                padding-left: 28px; padding-right: 28px; padding-top: 24px; padding-bottom: 16px; spacing: 16px;
+
+                Text {
+                    text: root.t-servers;
+                    font-size: 28px; font-weight: 700; font-family: "Play";
+                    color: root.c-page-title;
+                    horizontal-alignment: center;
+                    vertical-stretch: 0;
+                }
+
+                HorizontalLayout {
+                    alignment: end; spacing: 10px; vertical-stretch: 0; height: 36px;
+                    AtBtn {
+                        text: root.show-create-modal ? root.t-cancel : root.t-create;
+                        primary: !root.show-create-modal;
+                        dark: root.show-create-modal;
+                        width: 140px; height: 36px;
+                        clicked => { root.show-create-modal = !root.show-create-modal; }
+                    }
+                }
+
+                if root.show-create-modal : Rectangle {
+                    height: 64px; vertical-stretch: 0; border-radius: 2px; background: root.c-bg-card;
+                    HorizontalLayout {
+                        padding: 12px; spacing: 10px; alignment: center;
+                        new_name := AtInput { placeholder-text: app-lang == "tr" ? "Sunucu adı..." : "Server name..."; horizontal-stretch: 1; }
+                        new_port := AtInput { placeholder-text: "Port"; width: 88px; text: "25565"; }
+                        AtBtn {
+                            text: root.t-create; primary: true; width: 110px; height: 40px;
+                            clicked => {
+                                root.create-new-server(new_name.text, new_port.text);
+                                new_name.text = "";
+                                root.show-create-modal = false;
+                            }
+                        }
+                    }
+                }
+
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        alignment: start;
+                        padding: 4px; spacing: 10px;
+                        for srv in root.servers-list : ServerRowCard {
+                            height: 88px;
+                            server-name: srv.name;
+                            server-id: srv.id;
+                            software-info: srv.software + " " + srv.version + " · " + srv.port;
+                            is-running: srv.is-running;
+                            delete-label: app-lang == "tr" ? "Sil" : "Del";
+                            clicked => { root.select-and-manage-server(srv.id); }
+                            delete-clicked => { root.delete-server(srv.id); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // SERVER WORKSPACE
+        if root.in-server-view : HorizontalLayout {
+            spacing: 0;
+
+            Rectangle {
+                width: 208px;
+                background: AppTheme.sidebar;
+
+                VerticalLayout {
+                    padding-top: 8px; padding-bottom: 12px; spacing: 0;
+
+                    NavItem {
+                        label: root.t-back;
+                        icon: "list";
+                        active: false;
+                        clicked => { root.in-server-view = false; root.refresh-servers-list(); }
+                    }
+
+                    Rectangle { height: 8px; }
+                    VerticalLayout {
+                        padding-left: 16px; padding-right: 12px; padding-bottom: 10px; spacing: 2px;
+                        Text { text: root.active-server-name; font-size: 16px; font-weight: 700; font-family: "Play"; color: AppTheme.chrome; overflow: elide; }
+                        Text { text: root.server-ip; font-size: 12px; font-weight: 700; font-family: "Play"; color: #2b87d3; overflow: elide; }
+                    }
+                    Rectangle { height: 1px; background: #40505c; }
+
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            alignment: start;
+                            NavItem { label: root.t-overview; icon: "server"; active: root.active-tab == 0; clicked => { root.active-tab = 0; } }
+                            NavItem { label: root.t-options; icon: "options"; active: root.active-tab == 1; clicked => { root.active-tab = 1; root.load-server-properties(); } }
+                            NavItem { label: root.t-console; icon: "console"; active: root.active-tab == 2; clicked => { root.active-tab = 2; root.console-follow = true; } }
+                            NavItem { label: root.t-logs; icon: "logs"; active: root.active-tab == 11; clicked => { root.active-tab = 11; root.refresh-logs(); } }
+                            NavItem { label: root.t-players; icon: "players"; active: root.active-tab == 8; clicked => { root.active-tab = 8; root.refresh-players(); } }
+                            NavItem { label: root.t-software; icon: "software"; active: root.active-tab == 3; clicked => { root.active-tab = 3; } }
+                            if root.uses-plugins : NavItem { label: root.t-plugins; icon: "plugins"; active: root.active-tab == 6; clicked => { root.active-tab = 6; root.plugin-source = "Modrinth"; } }
+                            if root.uses-mods : NavItem { label: root.t-mods; icon: "plugins"; active: root.active-tab == 6; clicked => { root.active-tab = 6; root.plugin-source = "Modrinth"; } }
+                            NavItem { label: root.t-files; icon: "files"; active: root.active-tab == 5; clicked => { root.active-tab = 5; root.refresh-files(); } }
+                            NavItem { label: root.t-worlds; icon: "worlds"; active: root.active-tab == 9; clicked => { root.active-tab = 9; root.refresh-worlds(); } }
+                            NavItem { label: root.t-backups; icon: "backups"; active: root.active-tab == 10; clicked => { root.active-tab = 10; root.refresh-worlds(); } }
+                            NavItem { label: root.t-access; icon: "access"; active: root.active-tab == 12; clicked => { root.active-tab = 12; root.refresh-players(); root.load-server-properties(); } }
+                        }
+                    }
+                    NavItem { label: root.t-settings; icon: "settings"; active: root.active-tab == 7; clicked => { root.active-tab = 7; } }
+                }
+            }
+
+            Rectangle { width: 16px; background: AppTheme.page; }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                background: root.c-bg-main;
+                clip: false;
+
+                // 0 SERVER
+                if root.active-tab == 0 : ScrollView {
+                    VerticalLayout {
+                        alignment: start;
+                        spacing: 0;
+                        padding-left: 16px;
+                        padding-right: 16px;
+
+                        if root.server-error-message != "" : Rectangle {
+                            height: 44px; vertical-stretch: 0; background: #F62451; clip: true;
+                            HorizontalLayout {
+                                padding-left: 16px; padding-right: 12px; alignment: space-between;
+                                Text { text: root.server-error-message; color: #f0f0f0; font-size: 13px; font-weight: 700; font-family: "Play"; vertical-alignment: center; }
+                                AtBtn { text: "Java"; inverted: true; width: 80px; height: 32px; clicked => { root.active-tab = 4; } }
+                            }
+                        }
+
+                        Rectangle { height: 12px; vertical-stretch: 0; background: root.c-bg-main; }
+
+                        Rectangle {
+                            vertical-stretch: 0;
+                            clip: true;
+                            border-radius: 2px;
+                            VerticalLayout {
+                                spacing: 0;
+                                Rectangle {
+                                    background: #2D3943;
+                                    vertical-stretch: 0;
+                                    VerticalLayout {
+                                        padding-top: 22px;
+                                        padding-bottom: 16px;
+                                        padding-left: 16px;
+                                        padding-right: 16px;
+                                        spacing: 10px;
+                                        Text {
+                                            text: root.active-server-name + ".local";
+                                            font-size: 22px; font-weight: 700; font-family: "Play";
+                                            color: #f0f0f0;
+                                            horizontal-alignment: center;
+                                            overflow: elide;
+                                            vertical-stretch: 0;
+                                        }
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            vertical-stretch: 0;
+                                            height: 28px;
+                                            ConnectBtn {
+                                                text: root.t-connect;
+                                                clicked => { root.open-server-folder(); }
+                                            }
+                                        }
+                                    }
+                                }
+                                Rectangle {
+                                    height: 52px; vertical-stretch: 0;
+                                    background: root.server-running ? #1FD78D : #F62451;
+                                    VerticalLayout {
+                                        width: 100%; height: 100%;
+                                        alignment: center;
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            spacing: 10px;
+                                            height: 22px;
+                                            VerticalLayout {
+                                                width: 18px; height: 22px; alignment: center;
+                                                PowerIcon { width: 18px; height: 18px; icon-color: #f0f0f0; }
+                                            }
+                                            Text {
+                                                text: root.server-running ? root.t-online : root.t-offline;
+                                                color: #f0f0f0; font-size: 16px; font-weight: 700; font-family: "Play";
+                                                height: 22px;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 18px; vertical-stretch: 0; background: root.c-bg-main; }
+
+                        VerticalLayout {
+                            padding-left: 24px; padding-right: 24px; padding-top: 0px; padding-bottom: 18px; spacing: 12px;
+                            HorizontalLayout {
+                                alignment: center;
+                                vertical-stretch: 0;
+                                HugeActionBtn {
+                                    text: root.server-running ? root.t-stop : root.t-start;
+                                    is-stop: root.server-running;
+                                    clicked => {
+                                        if (root.server-running) { root.stop-server-clicked(); }
+                                        else { root.start-server-clicked(); }
+                                    }
+                                }
+                            }
+
+                            InfoRow {
+                                label: app-lang == "tr" ? "Adres" : "Address";
+                                value: root.server-ip;
+                                action-text: root.t-console;
+                                action-clicked => { root.active-tab = 2; }
+                            }
+                            InfoRow {
+                                label: root.t-software;
+                                value: root.selected-software;
+                                action-text: root.t-change;
+                                action-clicked => { root.active-tab = 3; }
+                            }
+                            InfoRow {
+                                label: app-lang == "tr" ? "Sürüm" : "Version";
+                                value: root.selected-version;
+                                action-text: root.t-change;
+                                action-clicked => { root.active-tab = 3; }
+                            }
+                            InfoRow {
+                                label: "RAM";
+                                value: root.ram-amount + " " + root.ram-unit;
+                                action-text: root.t-change;
+                                action-clicked => { root.active-tab = 1; root.load-server-properties(); }
+                            }
+                        }
+                    }
+                }
+
+                // 1 OPTIONS
+                if root.active-tab == 1 : ScrollView {
+                    VerticalLayout {
+                        alignment: start;
+                        padding: 18px; spacing: 10px;
+
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Text { text: root.t-options; font-size: 22px; font-weight: 700; font-family: "Play"; color: root.c-page-title; overflow: elide; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                if root.prop-save-status != "" : Text { text: root.prop-save-status; color: #1fd78d; font-size: 12px; font-weight: 700; font-family: "Play"; vertical-alignment: center; overflow: elide; }
+                                AtBtn { text: root.t-save; success: true; width: 90px; height: 32px; clicked => { root.save-server-properties(); } }
+                            }
+                        }
+
+                        Text {
+                            text: "server.properties";
+                            font-size: 13px; font-weight: 700; font-family: "Play"; color: root.c-page-title;
+                            vertical-stretch: 0;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 10px;
+                            OptionCard {
+                                title: app-lang == "tr" ? "Oyuncu sayısı" : "Max players";
+                                hint: "max-players=" + root.prop-max-players;
+                                AtStepper { value: root.prop-max-players; changed(v) => { root.prop-max-players = v; } }
+                            }
+                            OptionCard {
+                                title: app-lang == "tr" ? "Oyun modu" : "Gamemode";
+                                hint: "gamemode=" + root.prop-gamemode;
+                                AtBtn {
+                                    text: root.prop-gamemode == "survival" ? (app-lang == "tr" ? "Hayatta Kalma" : "Survival") : (root.prop-gamemode == "creative" ? (app-lang == "tr" ? "Yaratıcı" : "Creative") : (root.prop-gamemode == "adventure" ? (app-lang == "tr" ? "Macera" : "Adventure") : (app-lang == "tr" ? "İzleyici" : "Spectator")));
+                                    dark: true; width: 120px; height: 28px;
+                                    clicked => {
+                                        root.prop-gamemode = root.prop-gamemode == "survival" ? "creative" : (root.prop-gamemode == "creative" ? "adventure" : (root.prop-gamemode == "adventure" ? "spectator" : "survival"));
+                                    }
+                                }
+                            }
+                            OptionCard {
+                                title: app-lang == "tr" ? "Zorluk" : "Difficulty";
+                                hint: "difficulty=" + root.prop-difficulty;
+                                AtBtn {
+                                    text: root.prop-difficulty == "peaceful" ? (app-lang == "tr" ? "Barışçıl" : "Peaceful") : (root.prop-difficulty == "easy" ? (app-lang == "tr" ? "Kolay" : "Easy") : (root.prop-difficulty == "normal" ? (app-lang == "tr" ? "Normal" : "Normal") : (app-lang == "tr" ? "Zor" : "Hard")));
+                                    dark: true; width: 88px; height: 28px;
+                                    clicked => {
+                                        root.prop-difficulty = root.prop-difficulty == "peaceful" ? "easy" : (root.prop-difficulty == "easy" ? "normal" : (root.prop-difficulty == "normal" ? "hard" : "peaceful"));
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 10px;
+                            OptionCard {
+                                title: app-lang == "tr" ? "Güvenilir liste" : "Whitelist";
+                                hint: "white-list=" + (root.prop-whitelist ? "true" : "false");
+                                AtToggle { checked: root.prop-whitelist; toggled => { root.prop-whitelist = !root.prop-whitelist; } }
+                            }
+                            OptionCard {
+                                title: app-lang == "tr" ? "Korsan (Orijinal olmayan)" : "Cracked";
+                                hint: "online-mode=" + (root.prop-online-mode ? "true" : "false");
+                                AtToggle { checked: !root.prop-online-mode; toggled => { root.prop-online-mode = !root.prop-online-mode; } }
+                            }
+                            OptionCard {
+                                title: app-lang == "tr" ? "Uçmak" : "Allow flight";
+                                hint: "allow-flight=" + (root.prop-flight ? "true" : "false");
+                                AtToggle { checked: root.prop-flight; toggled => { root.prop-flight = !root.prop-flight; } }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 10px;
+                            OptionCard {
+                                title: "RAM";
+                                hint: app-lang == "tr" ? "Java bellek limiti (-Xmx)" : "Java memory limit (-Xmx)";
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    AtInput { text <=> root.ram-amount; width: 72px; height: 30px; }
+                                    AtBtn {
+                                        text: "MB"; width: 44px; height: 28px;
+                                        success: root.ram-unit == "MB";
+                                        inverted: root.ram-unit != "MB";
+                                        clicked => { root.ram-unit = "MB"; }
+                                    }
+                                    AtBtn {
+                                        text: "GB"; width: 44px; height: 28px;
+                                        success: root.ram-unit == "GB";
+                                        inverted: root.ram-unit != "GB";
+                                        clicked => { root.ram-unit = "GB"; }
+                                    }
+                                }
+                            }
+                            OptionCard {
+                                title: app-lang == "tr" ? "Doğuş koruması" : "Spawn protection";
+                                hint: "spawn-protection=" + root.prop-spawn-protection;
+                                AtStepper { value: root.prop-spawn-protection; changed(v) => { root.prop-spawn-protection = v; } }
+                            }
+                            OptionCard {
+                                title: "PvP";
+                                hint: "pvp=" + (root.prop-pvp ? "true" : "false");
+                                AtToggle { checked: root.prop-pvp; toggled => { root.prop-pvp = !root.prop-pvp; } }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 10px;
+                            OptionCard {
+                                title: app-lang == "tr" ? "Varsayılan modda kal" : "Force gamemode";
+                                hint: "force-gamemode=" + (root.prop-force-gamemode ? "true" : "false");
+                                AtToggle { checked: root.prop-force-gamemode; toggled => { root.prop-force-gamemode = !root.prop-force-gamemode; } }
+                            }
+                            OptionCard {
+                                title: app-lang == "tr" ? "Paket zorunlu" : "Require pack";
+                                hint: "require-resource-pack=" + (root.prop-require-resource-pack ? "true" : "false");
+                                AtToggle { checked: root.prop-require-resource-pack; toggled => { root.prop-require-resource-pack = !root.prop-require-resource-pack; } }
+                            }
+                            OptionCard {
+                                title: app-lang == "tr" ? "Zaman dilimi" : "Timezone";
+                                hint: root.prop-timezone;
+                                AtBtn {
+                                    text: root.prop-timezone;
+                                    dark: true; width: 140px; height: 28px;
+                                    clicked => {
+                                        root.prop-timezone = root.prop-timezone == "Europe/Istanbul" ? "UTC" : (root.prop-timezone == "UTC" ? "Europe/London" : (root.prop-timezone == "Europe/London" ? "Europe/Berlin" : (root.prop-timezone == "Europe/Berlin" ? "America/New_York" : "Europe/Istanbul")));
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 64px; border-radius: 2px; background: root.c-bg-card;
+                            border-width: root.c-border-w; border-color: root.c-border; clip: true;
+                            HorizontalLayout {
+                                padding-left: 16px; padding-right: 12px; spacing: 12px;
+                                VerticalLayout {
+                                    alignment: center; spacing: 2px; width: 130px;
+                                    Text {
+                                        text: app-lang == "tr" ? "Kaynak paketi" : "Resource pack";
+                                        font-size: 13px; font-weight: 700; font-family: "Play"; color: root.c-text-primary;
+                                        overflow: elide;
+                                    }
+                                    Text { text: "resource-pack="; font-size: 10px; font-family: "Play"; color: #A4A4A4; overflow: elide; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 1;
+                                    AtInput {
+                                        text <=> root.prop-resource-pack;
+                                        placeholder-text: "https://example.com/resourcepack.zip";
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 36px; height: 36px; border-radius: 2px; background: #2b87d3;
+                                        TouchArea { clicked => { root.pick-resource-pack(); } }
+                                        DownloadIcon {
+                                            icon-color: #f0f0f0;
+                                            x: (parent.width - 16px) / 2;
+                                            y: (parent.height - 16px) / 2;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 64px; border-radius: 2px; background: root.c-bg-card;
+                            border-width: root.c-border-w; border-color: root.c-border; clip: true;
+                            HorizontalLayout {
+                                padding-left: 16px; padding-right: 16px; spacing: 12px;
+                                VerticalLayout {
+                                    alignment: center; spacing: 2px; width: 150px;
+                                    Text {
+                                        text: app-lang == "tr" ? "Kaynak paketi bildirimi" : "Pack prompt";
+                                        font-size: 13px; font-weight: 700; font-family: "Play"; color: root.c-text-primary;
+                                        overflow: elide;
+                                    }
+                                    Text { text: "resource-pack-prompt="; font-size: 10px; font-family: "Play"; color: #A4A4A4; overflow: elide; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 1;
+                                    AtInput {
+                                        text <=> root.prop-resource-pack-prompt;
+                                        placeholder-text: app-lang == "tr" ? "Oyuncuya gösterilecek metin" : "Message shown to players";
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2 CONSOLE
+                if root.active-tab == 2 : VerticalLayout {
+                    padding: 20px; padding-left: 22px; spacing: 10px;
+                    Text { text: root.t-console; font-size: 22px; font-weight: 700; font-family: "Play"; color: root.c-page-title; vertical-stretch: 0; }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: AppTheme.is-dark ? #161c21 : #f7f7f7; border-radius: 2px;
+                        console_sv := ScrollView {
+                            vertical-stretch: 1;
+                            changed viewport-height => {
+                                if root.console-follow {
+                                    self.viewport-y = min(0px, self.visible-height - self.viewport-height);
+                                }
+                            }
+                            scrolled => {
+                                let bottom = min(0px, self.visible-height - self.viewport-height);
+                                root.console-follow = (self.viewport-y - bottom) > -28px;
+                            }
+                            VerticalLayout {
+                                padding: 12px;
+                                Text { text: root.console-text; color: AppTheme.text; font-size: 12px; font-family: "Consolas"; wrap: word-wrap; }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px; height: 40px;
+                        command_input := AtInput {
+                            placeholder-text: app-lang == "tr" ? "Komut girin..." : "Enter command...";
+                            horizontal-stretch: 1;
+                            accepted => { root.send-command(self.text); self.text = ""; }
+                        }
+                        AtBtn {
+                            text: app-lang == "tr" ? "Gönder" : "Send";
+                            primary: true; width: 110px; height: 40px;
+                            clicked => { root.send-command(command_input.text); command_input.text = ""; }
+                        }
+                    }
+                }
+
+                // 11 LOGS
+                if root.active-tab == 11 : VerticalLayout {
+                    padding: 20px; padding-left: 22px; spacing: 10px;
+                    HorizontalLayout {
+                        vertical-stretch: 0; height: 36px; alignment: space-between;
+                        Text { text: root.t-logs; font-size: 22px; font-weight: 700; font-family: "Play"; color: root.c-page-title; vertical-alignment: center; }
+                        AtBtn { text: app-lang == "tr" ? "Yenile" : "Refresh"; width: 78px; clicked => { root.refresh-logs(); } }
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: AppTheme.is-dark ? #161c21 : #f7f7f7; border-radius: 2px;
+                        ScrollView {
+                            VerticalLayout {
+                                padding: 12px;
+                                Text { text: root.log-file-text; color: AppTheme.text; font-size: 12px; font-family: "Consolas"; }
+                            }
+                        }
+                    }
+                }
+
+                // 3 SOFTWARE
+                if root.active-tab == 3 : VerticalLayout {
+                    padding: 20px; padding-left: 22px; spacing: 10px;
+                    if root.software-subview == 0 : VerticalLayout {
+                        spacing: 10px;
+                        HorizontalLayout {
+                            vertical-stretch: 0; height: 36px; alignment: space-between;
+                            Text { text: root.t-software; font-size: 22px; font-weight: 700; font-family: "Play"; color: root.c-page-title; vertical-alignment: center; }
+                            AtBtn { text: "Java"; dark: true; width: 72px; height: 32px; clicked => { root.active-tab = 4; } }
+                        }
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                alignment: start;
+                                spacing: 10px;
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    SoftwareCard { title: "Vanilla"; has-badge: false; is-selected: root.selected-software == "Vanilla"; clicked => { root.open-software-versions("Vanilla"); } PackageIcon { width: 22px; height: 22px; icon-color: #f0f0f0; } }
+                                    SoftwareCard { title: "Paper/Bukkit"; badge-text: app-lang == "tr" ? "Eklentiler" : "Plugins"; is-selected: root.selected-software == "Paper"; clicked => { root.open-software-versions("Paper"); } SoftwareIcon { width: 22px; height: 22px; icon-color: #f0f0f0; } }
+                                    SoftwareCard { title: "Purpur/Bukkit"; badge-text: app-lang == "tr" ? "Eklentiler" : "Plugins"; is-selected: root.selected-software == "Purpur"; clicked => { root.open-software-versions("Purpur"); } SoftwareIcon { width: 22px; height: 22px; icon-color: #f0f0f0; } }
+                                }
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    SoftwareCard { title: "Spigot/Bukkit"; badge-text: app-lang == "tr" ? "Eklentiler" : "Plugins"; is-selected: root.selected-software == "Spigot"; clicked => { root.open-software-versions("Spigot"); } SoftwareIcon { width: 22px; height: 22px; icon-color: #f0f0f0; } }
+                                    SoftwareCard { title: "Fabric"; badge-text: app-lang == "tr" ? "Modlar" : "Mods"; is-selected: root.selected-software == "Fabric"; clicked => { root.open-software-versions("Fabric"); } GearIcon { width: 22px; height: 22px; icon-color: #f0f0f0; } }
+                                    SoftwareCard { title: "Forge"; badge-text: app-lang == "tr" ? "Modlar" : "Mods"; is-selected: root.selected-software == "Forge"; clicked => { root.open-software-versions("Forge"); } GearIcon { width: 22px; height: 22px; icon-color: #f0f0f0; } }
+                                    SoftwareCard { title: "NeoForge"; badge-text: app-lang == "tr" ? "Modlar" : "Mods"; is-selected: root.selected-software == "NeoForge"; clicked => { root.open-software-versions("NeoForge"); } GearIcon { width: 22px; height: 22px; icon-color: #f0f0f0; } }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.software-subview == 1 : VerticalLayout {
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            AtBtn { text: app-lang == "tr" ? "← Geri" : "← Back"; dark: true; width: 80px; height: 32px; clicked => { root.software-subview = 0; } }
+                            Text { text: root.selected-software; font-size: 20px; font-weight: 700; font-family: "Play"; color: root.c-page-title; vertical-alignment: center; overflow: elide; }
+                        }
+                        Rectangle {
+                            vertical-stretch: 1;
+                            background: root.c-bg-card; border-radius: 2px;
+                            border-width: root.c-border-w; border-color: root.c-border;
+                            ScrollView {
+                                vertical-stretch: 1;
+                                VerticalLayout {
+                                    alignment: start;
+                                    padding: 12px; spacing: 8px;
+                                    for row in root.version-rows : HorizontalLayout {
+                                        spacing: 8px;
+                                        if row.has1 : VersionTagPill { version: row.v1; active: root.selected-version == row.v1; clicked => { root.select-version-and-install(root.selected-software, row.v1); } }
+                                        if row.has2 : VersionTagPill { version: row.v2; active: root.selected-version == row.v2; clicked => { root.select-version-and-install(root.selected-software, row.v2); } }
+                                        if row.has3 : VersionTagPill { version: row.v3; active: root.selected-version == row.v3; clicked => { root.select-version-and-install(root.selected-software, row.v3); } }
+                                        if row.has4 : VersionTagPill { version: row.v4; active: root.selected-version == row.v4; clicked => { root.select-version-and-install(root.selected-software, row.v4); } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.is-downloading || root.download-status != "Hazır" : Rectangle {
+                        height: 64px; border-radius: 2px; background: root.c-bg-card;
+                        border-width: root.c-border-w; border-color: root.c-border;
+                        VerticalLayout {
+                            padding: 12px; spacing: 6px; alignment: center;
+                            HorizontalLayout {
+                                alignment: space-between;
+                                Text { text: root.selected-software + " " + root.selected-version; font-size: 13px; font-weight: 700; font-family: "Play"; color: root.c-text-primary; }
+                                Text { text: root.is-downloading ? root.download-details : root.download-status; font-size: 12px; font-family: "Play"; color: #1fd78d; }
+                            }
+                            if root.is-downloading : Rectangle {
+                                height: 6px; border-radius: 2px; background: AppTheme.inset; clip: true;
+                                Rectangle { x: 0; width: parent.width * root.download-progress; background: #1fd78d; border-radius: 2px; animate width { duration: 100ms; } }
+                            }
+                        }
+                    }
+                }
+
+                // 4 JAVA
+                if root.active-tab == 4 : VerticalLayout {
+                    padding: 20px; padding-left: 22px; spacing: 10px;
+                    HorizontalLayout {
+                        vertical-stretch: 0; height: 36px;
+                        Text { text: root.t-java; font-size: 22px; font-weight: 700; font-family: "Play"; color: root.c-page-title; vertical-alignment: center; }
+                    }
+
+                    Rectangle {
+                        height: 56px; vertical-stretch: 0; border-radius: 2px; background: root.c-bg-card;
+                        border-width: root.c-border-w; border-color: root.c-border;
+                        HorizontalLayout {
+                            padding: 12px; alignment: space-between;
+                            VerticalLayout {
+                                alignment: center; spacing: 2px; horizontal-stretch: 1;
+                                Text { text: app-lang == "tr" ? "Bu sunucu için Java" : "Java for this server"; font-size: 13px; font-weight: 700; font-family: "Play"; color: root.c-text-primary; overflow: elide; }
+                                Text { text: root.active-java-info; font-size: 11px; font-family: "Play"; color: #1fd78d; overflow: elide; }
+                            }
+                            if root.is-downloading-java : Text { text: root.java-download-details; font-size: 11px; font-family: "Play"; color: #1fd78d; vertical-alignment: center; overflow: elide; }
+                        }
+                    }
+
+                    if root.is-downloading-java : Rectangle {
+                        height: 6px; vertical-stretch: 0; border-radius: 2px; background: AppTheme.inset;
+                        Rectangle { x: 0; width: parent.width * root.java-download-progress; background: #1fd78d; border-radius: 2px; animate width { duration: 100ms; } }
+                    }
+
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            alignment: start;
+                            spacing: 10px;
+                            Rectangle {
+                                height: 72px; vertical-stretch: 0; border-radius: 2px; background: root.c-bg-card;
+                                border-width: root.c-border-w; border-color: root.c-border;
+                                HorizontalLayout {
+                                    padding: 12px; alignment: space-between; spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: center; spacing: 4px; horizontal-stretch: 1;
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            Text { text: "Java 25 (Adoptium)"; font-size: 14px; font-weight: 700; font-family: "Play"; color: root.c-text-primary; overflow: elide; }
+                                            Rectangle {
+                                                height: 16px; border-radius: 2px; background: #2b87d3;
+                                                HorizontalLayout { padding-left: 6px; padding-right: 6px; Text { text: "26+"; color: #f0f0f0; font-size: 10px; font-weight: 700; font-family: "Play"; vertical-alignment: center; } }
+                                            }
+                                        }
+                                        Text { text: app-lang == "tr" ? "Purpur 26+ ve en yeni sürümler için." : "Required for Purpur 26+ and latest versions."; font-size: 11px; font-family: "Play"; color: root.c-text-secondary; overflow: elide; }
+                                    }
+                                    HorizontalLayout {
+                                        alignment: center; spacing: 8px;
+                                        if !root.has-java25 : AtBtn {
+                                            text: app-lang == "tr" ? "İndir" : "Download"; primary: true; width: 88px; height: 32px;
+                                            enabled: !root.is-downloading-java; clicked => { root.download-java-version(25); }
+                                        }
+                                        if root.has-java25 : AtBtn {
+                                            text: root.active-server-selected-java == "java25" ? (app-lang == "tr" ? "Seçili" : "Selected") : (app-lang == "tr" ? "Kullan" : "Use");
+                                            success: root.active-server-selected-java == "java25"; width: 88px; height: 32px;
+                                            clicked => { root.set-active-server-java("java25"); }
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                height: 68px; vertical-stretch: 0; border-radius: 2px; background: root.c-bg-card;
+                                border-width: root.c-border-w; border-color: root.c-border;
+                                HorizontalLayout {
+                                    padding: 12px; alignment: space-between; spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: center; spacing: 3px; horizontal-stretch: 1;
+                                        Text { text: "Java 21 (LTS)"; font-size: 14px; font-weight: 700; font-family: "Play"; color: root.c-text-primary; overflow: elide; }
+                                        Text { text: app-lang == "tr" ? "Minecraft 1.20.5 - 1.21.x için." : "For Minecraft 1.20.5 - 1.21.x."; font-size: 11px; font-family: "Play"; color: root.c-text-secondary; overflow: elide; }
+                                    }
+                                    HorizontalLayout {
+                                        alignment: center; spacing: 8px;
+                                        if !root.has-java21 : AtBtn {
+                                            text: app-lang == "tr" ? "İndir" : "Download"; primary: true; width: 88px; height: 32px;
+                                            enabled: !root.is-downloading-java; clicked => { root.download-java-version(21); }
+                                        }
+                                        if root.has-java21 : AtBtn {
+                                            text: root.active-server-selected-java == "java21" ? (app-lang == "tr" ? "Seçili" : "Selected") : (app-lang == "tr" ? "Kullan" : "Use");
+                                            success: root.active-server-selected-java == "java21"; width: 88px; height: 32px;
+                                            clicked => { root.set-active-server-java("java21"); }
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                height: 68px; vertical-stretch: 0; border-radius: 2px; background: root.c-bg-card;
+                                border-width: root.c-border-w; border-color: root.c-border;
+                                HorizontalLayout {
+                                    padding: 12px; alignment: space-between; spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: center; spacing: 3px; horizontal-stretch: 1;
+                                        Text { text: "Java 17 (LTS)"; font-size: 14px; font-weight: 700; font-family: "Play"; color: root.c-text-primary; overflow: elide; }
+                                        Text { text: app-lang == "tr" ? "Minecraft 1.18 - 1.20.4 için." : "For Minecraft 1.18 - 1.20.4."; font-size: 11px; font-family: "Play"; color: root.c-text-secondary; overflow: elide; }
+                                    }
+                                    HorizontalLayout {
+                                        alignment: center; spacing: 8px;
+                                        if !root.has-java17 : AtBtn {
+                                            text: app-lang == "tr" ? "İndir" : "Download"; primary: true; width: 88px; height: 32px;
+                                            enabled: !root.is-downloading-java; clicked => { root.download-java-version(17); }
+                                        }
+                                        if root.has-java17 : AtBtn {
+                                            text: root.active-server-selected-java == "java17" ? (app-lang == "tr" ? "Seçili" : "Selected") : (app-lang == "tr" ? "Kullan" : "Use");
+                                            success: root.active-server-selected-java == "java17"; width: 88px; height: 32px;
+                                            clicked => { root.set-active-server-java("java17"); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 5 FILES
+                if root.active-tab == 5 : VerticalLayout {
+                    padding: 20px; padding-left: 22px; spacing: 10px;
+                    HorizontalLayout {
+                        vertical-stretch: 0; height: 36px; alignment: space-between;
+                        Text { text: root.t-files; font-size: 22px; font-weight: 700; font-family: "Play"; color: root.c-page-title; vertical-alignment: center; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            AtBtn { text: app-lang == "tr" ? "Klasör" : "Folder"; dark: true; width: 88px; clicked => { root.open-server-folder(); } }
+                            AtBtn { text: app-lang == "tr" ? "Yenile" : "Refresh"; width: 78px; clicked => { root.refresh-files(); } }
+                        }
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: root.c-bg-card; border-radius: 2px;
+                        border-width: root.c-border-w; border-color: root.c-border;
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                alignment: start;
+                                padding: 8px; spacing: 4px;
+                                for file in root.server-files : Rectangle {
+                                    height: 32px; vertical-stretch: 0; border-radius: 2px; background: root.c-bg-inset;
+                                    HorizontalLayout {
+                                        padding-left: 12px; padding-right: 12px; spacing: 10px;
+                                        Text { text: file.is-dir ? "📁" : "📄"; vertical-alignment: center; }
+                                        Text { text: file.name; color: root.c-text-primary; font-size: 13px; font-weight: 700; font-family: "Play"; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                                        Text { text: file.size; color: root.c-text-secondary; font-size: 12px; font-family: "Play"; vertical-alignment: center; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 8 PLAYERS
+                if root.active-tab == 8 : VerticalLayout {
+                    padding: 20px; padding-left: 22px; spacing: 10px;
+                    HorizontalLayout {
+                        vertical-stretch: 0; height: 36px; alignment: space-between;
+                        Text { text: root.t-players; font-size: 22px; font-weight: 700; font-family: "Play"; color: root.c-page-title; vertical-alignment: center; }
+                        AtBtn { text: app-lang == "tr" ? "Yenile" : "Refresh"; width: 78px; clicked => { root.refresh-players(); } }
+                    }
+                    HorizontalLayout {
+                        vertical-stretch: 0; height: 40px; spacing: 8px;
+                        player_cmd := AtInput {
+                            placeholder-text: app-lang == "tr" ? "Oyuncu adı..." : "Player name...";
+                            horizontal-stretch: 1;
+                        }
+                        AtBtn { text: "Op"; success: true; width: 56px; height: 40px; clicked => { root.player-action("op", player_cmd.text); } }
+                        AtBtn { text: "Deop"; dark: true; width: 64px; height: 40px; clicked => { root.player-action("deop", player_cmd.text); } }
+                        AtBtn { text: "Kick"; width: 64px; height: 40px; clicked => { root.player-action("kick", player_cmd.text); } }
+                        AtBtn { text: "Ban"; destructive: true; width: 56px; height: 40px; clicked => { root.player-action("ban", player_cmd.text); } }
+                        AtBtn { text: "WL+"; dark: true; width: 56px; height: 40px; clicked => { root.player-action("wl-add", player_cmd.text); } }
+                    }
+                    if root.player-status != "" : Text {
+                        vertical-stretch: 0;
+                        text: root.player-status; color: #1fd78d; font-size: 12px; font-weight: 700; font-family: "Play";
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: root.c-bg-card; border-radius: 2px;
+                        border-width: root.c-border-w; border-color: root.c-border;
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                alignment: start;
+                                padding: 8px; spacing: 6px;
+                                for p in root.player-list : Rectangle {
+                                    height: 52px; vertical-stretch: 0; border-radius: 2px; background: root.c-bg-inset;
+                                    HorizontalLayout {
+                                        width: 100%; height: 100%;
+                                        padding-left: 12px; padding-right: 10px; spacing: 8px;
+                                        VerticalLayout {
+                                            alignment: center; spacing: 2px; horizontal-stretch: 1;
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                Text { text: p.name; color: root.c-text-primary; font-size: 14px; font-weight: 700; font-family: "Play"; vertical-alignment: center; overflow: elide; }
+                                                if p.is-op : Rectangle {
+                                                    height: 16px; border-radius: 2px; background: #2b87d3;
+                                                    HorizontalLayout { padding-left: 6px; padding-right: 6px; Text { text: "OP"; color: #f0f0f0; font-size: 10px; font-weight: 700; font-family: "Play"; vertical-alignment: center; } }
+                                                }
+                                                if p.is-whitelisted : Rectangle {
+                                                    height: 16px; border-radius: 2px; background: #1FD78D;
+                                                    HorizontalLayout { padding-left: 6px; padding-right: 6px; Text { text: "WL"; color: #f0f0f0; font-size: 10px; font-weight: 700; font-family: "Play"; vertical-alignment: center; } }
+                                                }
+                                            }
+                                            Text { text: p.uuid; color: root.c-text-secondary; font-size: 11px; font-family: "Play"; overflow: elide; }
+                                        }
+                                        VMid {
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                AtBtn {
+                                                    text: p.is-op ? "Deop" : "Op";
+                                                    success: !p.is-op; dark: p.is-op; width: 62px; height: 30px;
+                                                    clicked => { root.player-action(p.is-op ? "deop" : "op", p.name); }
+                                                }
+                                                AtBtn { text: "Kick"; width: 56px; height: 30px; clicked => { root.player-action("kick", p.name); } }
+                                                AtBtn { text: "Ban"; destructive: true; width: 52px; height: 30px; clicked => { root.player-action("ban", p.name); } }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 9 WORLDS
+                if root.active-tab == 9 : VerticalLayout {
+                    padding: 20px; padding-left: 22px; spacing: 12px;
+                    HorizontalLayout {
+                        vertical-stretch: 0; height: 36px; alignment: space-between;
+                        Text { text: root.t-worlds; font-size: 22px; font-weight: 700; font-family: "Play"; color: root.c-page-title; vertical-alignment: center; }
+                        AtBtn { text: app-lang == "tr" ? "Yenile" : "Refresh"; width: 78px; clicked => { root.refresh-worlds(); } }
+                    }
+                    if root.world-status != "" : Text {
+                        vertical-stretch: 0;
+                        text: root.world-status; color: #1fd78d; font-size: 12px; font-weight: 700; font-family: "Play";
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: root.c-bg-main;
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                alignment: start;
+                                spacing: 10px;
+                                for w in root.world-list : Rectangle {
+                                    height: 88px; vertical-stretch: 0; border-radius: 2px; background: root.c-bg-card;
+                                    border-width: root.c-border-w; border-color: root.c-border;
+                                    HorizontalLayout {
+                                        width: 100%; height: 100%;
+                                        padding-left: 16px; padding-right: 14px; spacing: 14px;
+                                        VMid {
+                                            width: 48px;
+                                            Rectangle {
+                                                width: 48px; height: 48px; border-radius: 24px;
+                                                background: AppTheme.inset;
+                                                GlobeIcon {
+                                                    width: 26px; height: 26px; icon-color: #f0f0f0;
+                                                    x: (parent.width - 26px) / 2;
+                                                    y: (parent.height - 26px) / 2;
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center; spacing: 4px; horizontal-stretch: 1;
+                                            Text { text: w.name; color: root.c-text-primary; font-size: 16px; font-weight: 700; font-family: "Play"; overflow: elide; }
+                                            Text { text: w.kind; color: root.c-text-secondary; font-size: 12px; font-family: "Play"; overflow: elide; }
+                                        }
+                                        if w.kind == "Overworld" : VMid {
+                                            HorizontalLayout {
+                                                alignment: center; spacing: 8px;
+                                                Text {
+                                                    text: app-lang == "tr" ? "Optimize et" : "Optimize";
+                                                    color: root.c-text-primary; font-size: 13px; font-weight: 700; font-family: "Play";
+                                                    vertical-alignment: center;
+                                                }
+                                                AtCheck {
+                                                    checked: root.world-optimize;
+                                                    toggled => {
+                                                        root.world-optimize = !root.world-optimize;
+                                                        root.optimize-world(w.name, root.world-optimize);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        VMid {
+                                            HorizontalLayout {
+                                                alignment: center; spacing: 8px;
+                                                AtBtn {
+                                                    text: app-lang == "tr" ? "Yükle" : "Upload";
+                                                    warn: true; width: 78px; height: 32px;
+                                                    clicked => { root.upload-world(w.name); }
+                                                }
+                                                AtBtn {
+                                                    text: app-lang == "tr" ? "Dosyalar" : "Files";
+                                                    inverted: true; width: 92px; height: 32px;
+                                                    clicked => { root.open-world-folder(w.name); }
+                                                }
+                                                AtBtn {
+                                                    text: app-lang == "tr" ? "Oluştur" : "Create";
+                                                    success: true; width: 88px; height: 32px;
+                                                    clicked => { root.create-world(w.name); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 10 BACKUPS
+                if root.active-tab == 10 : VerticalLayout {
+                    padding: 20px; padding-left: 22px; spacing: 10px;
+                    HorizontalLayout {
+                        vertical-stretch: 0; height: 36px; alignment: space-between;
+                        Text { text: root.t-backups; font-size: 22px; font-weight: 700; font-family: "Play"; color: root.c-page-title; vertical-alignment: center; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            AtBtn { text: app-lang == "tr" ? "Klasör" : "Folder"; dark: true; width: 88px; clicked => { root.open-backups-folder(); } }
+                            AtBtn {
+                                text: root.is-backing-up ? (app-lang == "tr" ? "Alınıyor..." : "Saving...") : (app-lang == "tr" ? "Yedekle" : "Backup");
+                                success: true; width: 100px;
+                                enabled: !root.is-backing-up && !root.is-uploading-cloud;
+                                clicked => { root.backup-worlds(); }
+                            }
+                            AtBtn {
+                                text: root.is-uploading-cloud ? (app-lang == "tr" ? "Gönderiliyor..." : "Uploading...") : (app-lang == "tr" ? "Bulut" : "Cloud");
+                                dark: true; width: 88px;
+                                enabled: !root.is-backing-up && !root.is-uploading-cloud;
+                                clicked => { root.backup-and-upload(); }
+                            }
+                            AtBtn { text: app-lang == "tr" ? "Yenile" : "Refresh"; width: 78px; clicked => { root.refresh-worlds(); } }
+                        }
+                    }
+                    if root.world-status != "" : Text {
+                        vertical-stretch: 0;
+                        text: root.world-status; color: #1fd78d; font-size: 12px; font-weight: 700; font-family: "Play";
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: root.c-bg-card; border-radius: 2px;
+                        border-width: root.c-border-w; border-color: root.c-border;
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                alignment: start;
+                                padding: 8px; spacing: 6px;
+                                for b in root.backup-list : Rectangle {
+                                    height: 44px; vertical-stretch: 0; border-radius: 2px; background: root.c-bg-inset;
+                                    HorizontalLayout {
+                                        padding-left: 12px; padding-right: 10px; spacing: 8px;
+                                        VerticalLayout {
+                                            alignment: center; spacing: 2px; horizontal-stretch: 1;
+                                            Text { text: b.name; color: root.c-text-primary; font-size: 13px; font-weight: 700; font-family: "Play"; overflow: elide; }
+                                            Text { text: b.size; color: root.c-text-secondary; font-size: 11px; font-family: "Play"; }
+                                        }
+                                        AtBtn {
+                                            text: app-lang == "tr" ? "Yükle" : "Restore";
+                                            success: true; width: 70px; height: 30px;
+                                            clicked => { root.restore-backup(b.name); }
+                                        }
+                                        AtBtn {
+                                            text: app-lang == "tr" ? "Bulut" : "Cloud";
+                                            dark: true; width: 64px; height: 30px;
+                                            enabled: !root.is-uploading-cloud;
+                                            clicked => { root.upload-backup(b.name); }
+                                        }
+                                        AtBtn {
+                                            text: app-lang == "tr" ? "Sil" : "Del";
+                                            destructive: true; width: 52px; height: 30px;
+                                            clicked => { root.delete-backup(b.name); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 12 ACCESS
+                if root.active-tab == 12 : VerticalLayout {
+                    padding: 20px; padding-left: 22px; spacing: 10px;
+                    HorizontalLayout {
+                        vertical-stretch: 0; height: 36px; alignment: space-between;
+                        Text { text: root.t-access; font-size: 22px; font-weight: 700; font-family: "Play"; color: root.c-page-title; vertical-alignment: center; }
+                        AtBtn { text: app-lang == "tr" ? "Yenile" : "Refresh"; width: 78px; clicked => { root.refresh-players(); root.load-server-properties(); } }
+                    }
+                    OptionCard {
+                        title: app-lang == "tr" ? "Beyaz liste" : "Whitelist";
+                        hint: "white-list=" + (root.prop-whitelist ? "true" : "false");
+                        HorizontalLayout {
+                            spacing: 6px;
+                            AtToggle { checked: root.prop-whitelist; toggled => { root.prop-whitelist = !root.prop-whitelist; root.save-server-properties(); } }
+                        }
+                    }
+                    HorizontalLayout {
+                        vertical-stretch: 0; height: 40px; spacing: 8px;
+                        access_name := AtInput {
+                            placeholder-text: app-lang == "tr" ? "Oyuncu adı..." : "Player name...";
+                            horizontal-stretch: 1;
+                        }
+                        AtBtn { text: "Op"; success: true; width: 56px; height: 40px; clicked => { root.player-action("op", access_name.text); } }
+                        AtBtn { text: "WL+"; dark: true; width: 56px; height: 40px; clicked => { root.player-action("wl-add", access_name.text); } }
+                        AtBtn { text: "WL-"; dark: true; width: 56px; height: 40px; clicked => { root.player-action("wl-remove", access_name.text); } }
+                    }
+                    if root.player-status != "" : Text {
+                        vertical-stretch: 0;
+                        text: root.player-status; color: #1fd78d; font-size: 12px; font-weight: 700; font-family: "Play";
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: root.c-bg-card; border-radius: 2px;
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                alignment: start;
+                                padding: 8px; spacing: 6px;
+                                for p in root.player-list : Rectangle {
+                                    height: 48px; vertical-stretch: 0; border-radius: 2px; background: root.c-bg-inset;
+                                    HorizontalLayout {
+                                        width: 100%; height: 100%;
+                                        padding-left: 12px; padding-right: 10px; spacing: 8px;
+                                        VerticalLayout {
+                                            alignment: center; spacing: 2px; horizontal-stretch: 1;
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                Text { text: p.name; color: root.c-text-primary; font-size: 14px; font-weight: 700; font-family: "Play"; overflow: elide; }
+                                                if p.is-op : Rectangle {
+                                                    height: 16px; border-radius: 2px; background: #2b87d3;
+                                                    HorizontalLayout { padding-left: 6px; padding-right: 6px; Text { text: "OP"; color: #f0f0f0; font-size: 10px; font-weight: 700; font-family: "Play"; vertical-alignment: center; } }
+                                                }
+                                                if p.is-whitelisted : Rectangle {
+                                                    height: 16px; border-radius: 2px; background: #1FD78D;
+                                                    HorizontalLayout { padding-left: 6px; padding-right: 6px; Text { text: "WL"; color: #f0f0f0; font-size: 10px; font-weight: 700; font-family: "Play"; vertical-alignment: center; } }
+                                                }
+                                            }
+                                            Text { text: p.uuid; color: root.c-text-secondary; font-size: 11px; font-family: "Play"; overflow: elide; }
+                                        }
+                                        VMid {
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                AtBtn {
+                                                    text: p.is-op ? "Deop" : "Op";
+                                                    success: !p.is-op; dark: p.is-op; width: 62px; height: 30px;
+                                                    clicked => { root.player-action(p.is-op ? "deop" : "op", p.name); }
+                                                }
+                                                AtBtn {
+                                                    text: p.is-whitelisted ? "WL-" : "WL+";
+                                                    dark: true; width: 56px; height: 30px;
+                                                    clicked => { root.player-action(p.is-whitelisted ? "wl-remove" : "wl-add", p.name); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 6 PLUGINS
+                if root.active-tab == 6 : VerticalLayout {
+                    padding: 20px; padding-left: 22px; spacing: 10px;
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text { text: root.uses-mods ? root.t-mods : root.t-plugins; font-size: 22px; font-weight: 700; font-family: "Play"; color: root.c-page-title; overflow: elide; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            AtBtn { text: "Modrinth"; success: root.plugin-source == "Modrinth"; dark: root.plugin-source != "Modrinth"; width: 92px; height: 32px; clicked => { root.plugin-source = "Modrinth"; root.search-mods("", "Modrinth"); } }
+                            if root.uses-plugins : AtBtn { text: "SpigotMC"; success: root.plugin-source == "SpigotMC"; dark: root.plugin-source != "SpigotMC"; width: 92px; height: 32px; clicked => { root.plugin-source = "SpigotMC"; root.search-mods("", "SpigotMC"); } }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px; height: 40px;
+                        AtInput {
+                            text <=> root.plugin-search-query;
+                            placeholder-text: root.uses-mods ? (app-lang == "tr" ? "Mod ara..." : "Search mods...") : (app-lang == "tr" ? "Eklenti ara..." : "Search plugins...");
+                            horizontal-stretch: 1;
+                            accepted => { root.search-mods(root.plugin-search-query, root.plugin-source); }
+                        }
+                        AtBtn { text: app-lang == "tr" ? "Ara" : "Search"; primary: true; width: 80px; height: 40px; clicked => { root.search-mods(root.plugin-search-query, root.plugin-source); } }
+                    }
+
+                    if root.mod-status-message != "" : Text { text: root.mod-status-message; color: #1fd78d; font-size: 13px; font-weight: 700; font-family: "Play"; overflow: elide; }
+
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: root.c-bg-main; border-radius: 2px;
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                alignment: start;
+                                padding: 8px; spacing: 8px;
+                                for item in root.mod-results : Rectangle {
+                                    height: 64px; vertical-stretch: 0; border-radius: 2px; background: root.c-bg-card;
+                                    border-width: root.c-border-w; border-color: root.c-border;
+                                    HorizontalLayout {
+                                        width: 100%; height: 100%;
+                                        padding-left: 10px; padding-right: 10px; spacing: 10px;
+                                        VMid {
+                                            width: 40px;
+                                            Rectangle {
+                                                width: 40px; height: 40px; border-radius: 2px;
+                                                background: AppTheme.inset; clip: true;
+                                                if item.has-icon : Image { source: item.icon; width: 40px; height: 40px; image-fit: cover; }
+                                                if !item.has-icon : PackageIcon { width: 20px; height: 20px; icon-color: #2b87d3; x: 10px; y: 10px; }
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center; spacing: 3px; horizontal-stretch: 1;
+                                            HorizontalLayout {
+                                                spacing: 8px; alignment: start;
+                                                Text { text: item.title; color: root.c-text-primary; font-size: 14px; font-weight: 700; font-family: "Play"; vertical-alignment: center; overflow: elide; }
+                                                Rectangle {
+                                                    height: 16px; border-radius: 2px; background: #2b87d3; clip: true;
+                                                    HorizontalLayout { padding-left: 5px; padding-right: 5px; Text { text: root.plugin-source; color: #f0f0f0; font-size: 9px; font-weight: 700; font-family: "Play"; vertical-alignment: center; } }
+                                                }
+                                            }
+                                            Text { text: item.description; color: root.c-text-secondary; font-size: 11px; font-family: "Play"; overflow: elide; }
+                                        }
+                                        VMid {
+                                            width: 148px;
+                                            HorizontalLayout {
+                                                alignment: end; spacing: 8px;
+                                                Text { text: item.downloads; color: #1fd78d; font-size: 11px; font-weight: 700; font-family: "Play"; vertical-alignment: center; overflow: elide; }
+                                                AtBtn {
+                                                    text: item.installed ? (app-lang == "tr" ? "Kuruldu" : "Installed") : (app-lang == "tr" ? "Kur" : "Install");
+                                                    success: !item.installed;
+                                                    dark: item.installed;
+                                                    width: 78px; height: 30px;
+                                                    clicked => { root.install-mod(item.slug); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 7 SETTINGS
+                if root.active-tab == 7 : VerticalLayout {
+                    padding: 20px; padding-left: 22px; spacing: 10px;
+                    Text { text: root.t-settings; font-size: 22px; font-weight: 700; font-family: "Play"; color: root.c-page-title; overflow: elide; vertical-stretch: 0; }
+
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            alignment: start;
+                            spacing: 10px;
+                            OptionCard {
+                                title: app-lang == "tr" ? "Arayüz teması" : "Interface theme";
+                                hint: AppTheme.is-dark ? root.t-theme-dark : root.t-theme-light;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    AtBtn { text: root.t-theme-dark; success: AppTheme.is-dark; dark: !AppTheme.is-dark; width: 72px; height: 28px; clicked => { root.apply-theme(true); } }
+                                    AtBtn { text: root.t-theme-light; success: !AppTheme.is-dark; dark: AppTheme.is-dark; width: 72px; height: 28px; clicked => { root.apply-theme(false); } }
+                                }
+                            }
+                            OptionCard {
+                                title: app-lang == "tr" ? "Uygulama dili" : "Language";
+                                hint: app-lang == "tr" ? root.t-lang-tr : root.t-lang-en;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    AtBtn { text: root.t-lang-tr; success: root.app-lang == "tr"; dark: root.app-lang != "tr"; width: 72px; height: 28px; clicked => { root.app-lang = "tr"; } }
+                                    AtBtn { text: root.t-lang-en; success: root.app-lang == "en"; dark: root.app-lang != "en"; width: 72px; height: 28px; clicked => { root.app-lang = "en"; } }
+                                }
+                            }
+                            Rectangle {
+                                vertical-stretch: 0; border-radius: 2px; background: root.c-bg-card;
+                                VerticalLayout {
+                                    padding: 12px; spacing: 8px;
+                                    Text {
+                                        text: app-lang == "tr" ? "Hesap ile senkron (Google / OneDrive)" : "Sign in and sync (Google / OneDrive)";
+                                        font-size: 13px; font-weight: 700; font-family: "Play"; color: #f0f0f0;
+                                    }
+                                    Text {
+                                        text: app-lang == "tr" ? "Panel tarayıcıda oturum açtırır, zip Drive/OneDrive API ile gider. İlk seferde kendi Client ID'ni yapıştırırsın (Google Desktop OAuth / Azure public client)." : "The panel opens a browser login, then uploads via Drive/OneDrive API. Paste your Client ID once (Google Desktop OAuth / Azure public client).";
+                                        font-size: 10px; font-family: "Play"; color: #A4A4A4;
+                                    }
+                                    AtInput {
+                                        text <=> root.cloud-google-client-id;
+                                        placeholder-text: "Google Client ID";
+                                    }
+                                    AtInput {
+                                        text <=> root.cloud-google-secret;
+                                        placeholder-text: "Google Client Secret (opsiyonel)";
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: root.cloud-google-email == "" ? (app-lang == "tr" ? "Google: bağlı değil" : "Google: not signed in") : ("Google: " + root.cloud-google-email);
+                                            color: #f0f0f0; font-size: 12px; font-weight: 700; font-family: "Play"; vertical-alignment: center; horizontal-stretch: 1; overflow: elide;
+                                        }
+                                        if root.cloud-google-email == "" : AtBtn {
+                                            text: app-lang == "tr" ? "Google giriş" : "Google sign in";
+                                            success: true; width: 120px; height: 30px;
+                                            enabled: !root.is-cloud-logging-in;
+                                            clicked => { root.save-cloud-settings(); root.google-login(); }
+                                        }
+                                        if root.cloud-google-email != "" : AtBtn {
+                                            text: app-lang == "tr" ? "Çıkış" : "Sign out";
+                                            destructive: true; width: 72px; height: 30px;
+                                            clicked => { root.google-logout(); }
+                                        }
+                                    }
+                                    AtInput {
+                                        text <=> root.cloud-onedrive-client-id;
+                                        placeholder-text: "OneDrive / Azure Client ID";
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: root.cloud-onedrive-email == "" ? (app-lang == "tr" ? "OneDrive: bağlı değil" : "OneDrive: not signed in") : ("OneDrive: " + root.cloud-onedrive-email);
+                                            color: #f0f0f0; font-size: 12px; font-weight: 700; font-family: "Play"; vertical-alignment: center; horizontal-stretch: 1; overflow: elide;
+                                        }
+                                        if root.cloud-onedrive-email == "" : AtBtn {
+                                            text: app-lang == "tr" ? "OneDrive giriş" : "OneDrive sign in";
+                                            success: true; width: 130px; height: 30px;
+                                            enabled: !root.is-cloud-logging-in;
+                                            clicked => { root.save-cloud-settings(); root.onedrive-login(); }
+                                        }
+                                        if root.cloud-onedrive-email != "" : AtBtn {
+                                            text: app-lang == "tr" ? "Çıkış" : "Sign out";
+                                            destructive: true; width: 72px; height: 30px;
+                                            clicked => { root.onedrive-logout(); }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        AtBtn {
+                                            text: "Google";
+                                            success: root.cloud-target == "google"; dark: root.cloud-target != "google"; width: 80px; height: 28px;
+                                            clicked => { root.cloud-target = "google"; root.save-cloud-settings(); }
+                                        }
+                                        AtBtn {
+                                            text: "OneDrive";
+                                            success: root.cloud-target == "onedrive"; dark: root.cloud-target != "onedrive"; width: 90px; height: 28px;
+                                            clicked => { root.cloud-target = "onedrive"; root.save-cloud-settings(); }
+                                        }
+                                        AtBtn {
+                                            text: app-lang == "tr" ? "Klasör" : "Folder";
+                                            success: root.cloud-target == "folder"; dark: root.cloud-target != "folder"; width: 80px; height: 28px;
+                                            clicked => { root.cloud-target = "folder"; root.save-cloud-settings(); }
+                                        }
+                                    }
+                                    if root.cloud-login-status != "" : Text {
+                                        text: root.cloud-login-status; color: #1fd78d; font-size: 11px; font-weight: 700; font-family: "Play";
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                vertical-stretch: 0; border-radius: 2px; background: root.c-bg-card;
+                                VerticalLayout {
+                                    padding: 12px; spacing: 8px;
+                                    Text {
+                                        text: app-lang == "tr" ? "Yedek: senkron klasörü (masaüstü uygulaması)" : "Backup: sync folder (desktop app)";
+                                        font-size: 13px; font-weight: 700; font-family: "Play"; color: #f0f0f0;
+                                    }
+                                    Text {
+                                        text: app-lang == "tr" ? "Giriş istemezsen OneDrive/Drive klasörünü seç; zip oraya kopyalanır." : "If you do not sign in, pick the OneDrive/Drive folder and the zip is copied there.";
+                                        font-size: 10px; font-family: "Play"; color: #A4A4A4;
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        if root.cloud-onedrive != "" : AtBtn {
+                                            text: "OneDrive"; success: true; width: 92px; height: 28px;
+                                            clicked => { root.cloud-folder = root.cloud-onedrive; root.cloud-target = "folder"; root.save-cloud-settings(); }
+                                        }
+                                        if root.cloud-gdrive != "" : AtBtn {
+                                            text: "Google Drive"; success: true; width: 110px; height: 28px;
+                                            clicked => { root.cloud-folder = root.cloud-gdrive; root.cloud-target = "folder"; root.save-cloud-settings(); }
+                                        }
+                                        if root.cloud-dropbox != "" : AtBtn {
+                                            text: "Dropbox"; success: true; width: 88px; height: 28px;
+                                            clicked => { root.cloud-folder = root.cloud-dropbox; root.cloud-target = "folder"; root.save-cloud-settings(); }
+                                        }
+                                        AtBtn {
+                                            text: app-lang == "tr" ? "Klasör seç" : "Browse";
+                                            dark: true; width: 96px; height: 28px;
+                                            clicked => { root.pick-cloud-folder(); }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        AtInput {
+                                            text <=> root.cloud-folder;
+                                            placeholder-text: app-lang == "tr" ? "C:\\Users\\...\\OneDrive" : "C:\\Users\\...\\OneDrive";
+                                            horizontal-stretch: 1;
+                                        }
+                                        AtBtn {
+                                            text: root.t-save; success: true; width: 88px; height: 40px;
+                                            clicked => { root.save-cloud-settings(); }
+                                        }
+                                    }
+                                    if root.cloud-status != "" : Text {
+                                        text: root.cloud-status; color: #1fd78d; font-size: 11px; font-weight: 700; font-family: "Play";
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
