@@ -1,8 +1,12 @@
 # PanelMC
 
-Lightweight desktop panel for local Minecraft servers. Built in Rust + Slint so it stays usable on old hardware (Core 2 / Q9550 class, 8 GB RAM, no SSE4.2, no AVX).
+Native Windows and Linux panel for Paper / Purpur servers. Rust + Slint, GNU GPLv3, no account.
 
-Maintainer: [@Q9550xRX570](https://github.com/Q9550xRX570)
+- Website: [panelmc.com](https://panelmc.com)
+- Releases: [GitHub Releases](https://github.com/Q9550xRX570/PanelMC/releases)
+- Maintainer: [@Q9550xRX570](https://github.com/Q9550xRX570)
+
+The panel is kept small so Java can use the RAM. x86_64 builds do not require SSE4.2 or AVX, so newer PCs and older 64-bit ones can both start it.
 
 Not affiliated with Mojang, Microsoft, PaperMC, or Aternos.
 
@@ -35,7 +39,7 @@ Release:
 cargo run --release
 ```
 
-On x86_64, `.cargo/config.toml` keeps SSE4.2/AVX off so the same binary can start on a Q9550-class CPU. ARM Linux is unaffected.
+On x86_64, `.cargo/config.toml` keeps SSE4.2/AVX off so the same binary can start on older 64-bit CPUs as well as new ones. ARM Linux is unaffected.
 
 ## Data (local only)
 
@@ -57,4 +61,10 @@ These folders are gitignored. Do not commit them.
 
 ## License
 
-MIT
+Copyright (C) 2026 Q9550xRX570
+
+PanelMC is free software: you can redistribute it and/or modify it under the terms of the [GNU General Public License v3](LICENSE) as published by the Free Software Foundation.
+
+If you **distribute** PanelMC or a modified version, you must provide the corresponding source under GPLv3. Running the app (hosting a world, installing plugins) does not put those files or the Minecraft client under the GPL.
+
+Slint is used under its GPLv3 option. Other crates (reqwest, serde, …) are MIT/Apache-2.0, which can be included in a GPLv3 program.

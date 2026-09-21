@@ -3,9 +3,9 @@ name = "panelmc"
 version = "0.1.0"
 edition = "2021"
 description = "Lightweight desktop Minecraft server panel"
-license = "MIT"
+license = "GPL-3.0-only"
 repository = "https://github.com/Q9550xRX570/PanelMC"
-homepage = "https://github.com/Q9550xRX570/PanelMC"
+homepage = "https://panelmc.com"
 build = "build.rs"
 
 [dependencies]
