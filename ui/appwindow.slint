@@ -445,7 +445,10 @@ component AtBtn inherits Rectangle {
     vertical-stretch: 0;
     border-radius: 2px;
     clip: true;
-    background: !root.enabled ? #7a7a7a : (root.destructive ? #F62451 : (root.success ? #1FD78D : (root.warn ? #e67e22 : ((root.accent || root.primary) ? #2b87d3 : (root.inverted ? #f0f0f0 : (root.dark ? #5b6a76 : #e8e8e8))))));
+    property <bool> plain: !root.destructive && !root.success && !root.warn && !root.accent && !root.primary && !root.inverted && !root.dark;
+    background: !root.enabled ? #7a7a7a : (root.destructive ? #F62451 : (root.success ? #1FD78D : (root.warn ? #e67e22 : ((root.accent || root.primary) ? #2b87d3 : (root.inverted ? #f0f0f0 : (root.dark ? #5b6a76 : (AppTheme.is-dark ? #e8e8e8 : #d0d0d0)))))));
+    border-width: root.plain && AppTheme.light ? 1px : 0px;
+    border-color: #6d6d6d;
 
     ta := TouchArea {
         enabled: root.enabled;
@@ -838,6 +841,22 @@ export component MainWindow inherits Window {
     in-out property <bool> server-running: false;
     in-out property <string> server-status: "Durduruldu";
     in-out property <string> server-ip: "127.0.0.1:25565";
+    in-out property <string> join-lan: "";
+    in-out property <string> join-wan: "";
+    in-out property <string> join-play: "";
+    in-out property <string> join-warn: "";
+    in-out property <string> join-host: "";
+    in-out property <string> join-status: "";
+    in-out property <string> cloudflare-token: "";
+    callback save-join-dns(string, string);
+    callback publish-srv();
+    in-out property <string> app-version: "0.2.0";
+    in-out property <bool> update-available: false;
+    in-out property <string> update-label: "";
+    in-out property <string> update-url: "";
+    callback open-update();
+    callback copy-text(string);
+    callback refresh-join();
     in-out property <string> console-text: "[Sistem] Hazır.\n";
     in-out property <bool> console-follow: true;
     in-out property <string> log-file-text: "";
@@ -987,6 +1006,13 @@ export component MainWindow inherits Window {
                                 font-family: "Play";
                                 vertical-alignment: center;
                             }
+                            Text {
+                                text: root.app-version;
+                                color: #A4A4A4;
+                                font-size: 12px;
+                                font-family: "Play";
+                                vertical-alignment: center;
+                            }
                         }
                     }
                 }
@@ -1007,6 +1033,11 @@ export component MainWindow inherits Window {
                                     vertical-alignment: center;
                                 }
                             }
+                        }
+                        if root.update-available : AtBtn {
+                            text: root.update-label;
+                            inverted: true; width: 128px; height: 32px;
+                            clicked => { root.open-update(); }
                         }
                         AtBtn {
                             text: AppTheme.is-dark ? root.t-theme-light : root.t-theme-dark;
@@ -1232,10 +1263,16 @@ export component MainWindow inherits Window {
                             }
 
                             InfoRow {
-                                label: app-lang == "tr" ? "Adres" : "Address";
-                                value: root.server-ip;
-                                action-text: root.t-console;
-                                action-clicked => { root.active-tab = 2; }
+                                label: app-lang == "tr" ? "Aynı ağ" : "Same network";
+                                value: root.join-lan;
+                                action-text: root.t-access;
+                                action-clicked => { root.active-tab = 12; root.refresh-players(); root.load-server-properties(); }
+                            }
+                            InfoRow {
+                                label: app-lang == "tr" ? "İnternet" : "Internet";
+                                value: root.join-wan;
+                                action-text: root.t-access;
+                                action-clicked => { root.active-tab = 12; root.refresh-players(); root.load-server-properties(); }
                             }
                             InfoRow {
                                 label: root.t-software;
@@ -1978,7 +2015,93 @@ export component MainWindow inherits Window {
                     HorizontalLayout {
                         vertical-stretch: 0; height: 36px; alignment: space-between;
                         Text { text: root.t-access; font-size: 22px; font-weight: 700; font-family: "Play"; color: root.c-page-title; vertical-alignment: center; }
-                        AtBtn { text: app-lang == "tr" ? "Yenile" : "Refresh"; width: 78px; clicked => { root.refresh-players(); root.load-server-properties(); } }
+                        AtBtn { text: app-lang == "tr" ? "Yenile" : "Refresh"; width: 78px; clicked => { root.refresh-join(); root.refresh-players(); root.load-server-properties(); } }
+                    }
+                    Rectangle {
+                        vertical-stretch: 0;
+                        background: root.c-bg-card;
+                        border-radius: 2px;
+                        VerticalLayout {
+                            padding: 14px; spacing: 4px;
+                            Text { text: app-lang == "tr" ? "Aynı ağ" : "Same network"; font-size: 12px; font-weight: 700; font-family: "Play"; color: root.c-text-secondary; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: root.join-lan; font-size: 16px; font-weight: 700; font-family: "Play"; color: #2b87d3; vertical-alignment: center; horizontal-stretch: 1; }
+                                AtBtn { text: app-lang == "tr" ? "Kopyala" : "Copy"; dark: true; width: 78px; height: 28px; clicked => { root.copy-text(root.join-lan); } }
+                            }
+                            Text { text: app-lang == "tr" ? "İnternet" : "Internet"; font-size: 12px; font-weight: 700; font-family: "Play"; color: root.c-text-secondary; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: root.join-wan; font-size: 16px; font-weight: 700; font-family: "Play"; color: #2b87d3; vertical-alignment: center; horizontal-stretch: 1; }
+                                AtBtn { text: app-lang == "tr" ? "Kopyala" : "Copy"; dark: true; width: 78px; height: 28px; clicked => { root.copy-text(root.join-wan); } }
+                            }
+                            if root.join-play != "" : Text { text: app-lang == "tr" ? "Port yazmadan" : "Without a port"; font-size: 12px; font-weight: 700; font-family: "Play"; color: root.c-text-secondary; }
+                            if root.join-play != "" : HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: root.join-play; font-size: 16px; font-weight: 700; font-family: "Play"; color: #1fd78d; vertical-alignment: center; horizontal-stretch: 1; }
+                                AtBtn { text: app-lang == "tr" ? "Kopyala" : "Copy"; dark: true; width: 78px; height: 28px; clicked => { root.copy-text(root.join-play); } }
+                            }
+                            if root.join-warn != "" : Text { text: root.join-warn; font-size: 12px; font-weight: 700; font-family: "Play"; color: #F62451; wrap: word-wrap; }
+                            if root.join-status != "" : Text { text: root.join-status; font-size: 12px; font-weight: 700; font-family: "Play"; color: #1fd78d; wrap: word-wrap; }
+                            Text {
+                                text: app-lang == "tr" ? "Aynı Wi-Fi için ilk adres yeter. Dışarıdan girmek için modemde TCP portunu bu bilgisayara yönlendir. Port yazılmadan girmek için aşağıdaki alan adına SRV gerekir." : "Same Wi-Fi uses the first address. Outside players need that TCP port forwarded to this PC. A hostname needs an SRV record so they can omit the port.";
+                                font-size: 12px; font-family: "Play"; color: root.c-text-secondary; wrap: word-wrap;
+                            }
+                            AtInput { text <=> root.join-host; placeholder-text: "mc.duckdns.org"; }
+                            AtInput { text <=> root.cloudflare-token; placeholder-text: app-lang == "tr" ? "Cloudflare token (DNS düzenle)" : "Cloudflare token (DNS edit)"; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                AtBtn {
+                                    text: app-lang == "tr" ? "Kaydet" : "Save";
+                                    dark: true; height: 32px;
+                                    clicked => { root.save-join-dns(root.join-host, root.cloudflare-token); }
+                                }
+                                AtBtn {
+                                    text: "SRV";
+                                    primary: true; width: 72px; height: 32px;
+                                    clicked => { root.save-join-dns(root.join-host, root.cloudflare-token); root.publish-srv(); }
+                                }
+                            }
+                        }
+                    }
+                    Text { text: app-lang == "tr" ? "Rehber" : "Guide"; font-size: 16px; font-weight: 700; font-family: "Play"; color: root.c-page-title; vertical-stretch: 0; }
+                    ScrollView {
+                        height: 220px; vertical-stretch: 0;
+                        VerticalLayout {
+                            alignment: start; spacing: 8px; padding: 2px;
+                            Rectangle {
+                                vertical-stretch: 0; background: root.c-bg-card; border-radius: 2px;
+                                VerticalLayout {
+                                    padding: 12px; spacing: 4px;
+                                    Text { text: "SRV"; font-size: 13px; font-weight: 700; font-family: "Play"; color: #f0f0f0; }
+                                    Text { text: app-lang == "tr" ? "Minecraft, alan adına bağlanırken _minecraft._tcp kaydına bakar. Kayıt portu söyler. Oyuncu mc.site.com yazar, :25566 eklemez. SRV hedefi bir isim olmalı, IP olmamalı. Bu panel SRV'yi Cloudflare'e yazar. Turuncu bulut kapalı kalsın; Minecraft proxy'den geçmez." : "Minecraft looks up _minecraft._tcp before connecting. That record carries the port, so players type mc.example.com and skip :25566. The SRV target must be a name, not an IP. This panel writes it to Cloudflare. Leave the orange cloud off. Minecraft does not work through the proxy."; font-size: 12px; font-family: "Play"; color: root.c-text-secondary; wrap: word-wrap; }
+                                }
+                            }
+                            Rectangle {
+                                vertical-stretch: 0; background: root.c-bg-card; border-radius: 2px;
+                                VerticalLayout {
+                                    padding: 12px; spacing: 4px;
+                                    Text { text: app-lang == "tr" ? "SRV nasıl kurulur" : "How to add SRV"; font-size: 13px; font-weight: 700; font-family: "Play"; color: #f0f0f0; }
+                                    Text { text: app-lang == "tr" ? "Cloudflare'de bölgeye DNS düzenleme token'ı aç. Alan adını ve token'ı buraya yapıştır, SRV'ye bas. Panel A kaydını dış IP'ye, SRV'yi _minecraft._tcp.alanadin şeklinde bu porta yazar. DuckDNS yalnız A kaydı tutar, SRV tutmaz. Orada port yine yazılır ya da Cloudflare'e taşınır." : "Create a Cloudflare token that can edit DNS for the zone. Paste the hostname and token here, then press SRV. The panel sets an A record to the public IP and an SRV at _minecraft._tcp.your.name for this port. DuckDNS stores only A records, not SRV. There you still type the port, or you move the name to Cloudflare."; font-size: 12px; font-family: "Play"; color: root.c-text-secondary; wrap: word-wrap; }
+                                }
+                            }
+                            Rectangle {
+                                vertical-stretch: 0; background: root.c-bg-card; border-radius: 2px;
+                                VerticalLayout {
+                                    padding: 12px; spacing: 4px;
+                                    Text { text: app-lang == "tr" ? "WAN neden açılmaz" : "Why WAN fails"; font-size: 13px; font-weight: 700; font-family: "Play"; color: #f0f0f0; }
+                                    Text { text: app-lang == "tr" ? "Sunucu kapalıysa, Windows güvenlik duvarı Java'yı kesiyorsa, modemde TCP portu yanlış bilgisayara gidiyorsa veya yönlendirme hiç yoksa dışarıdan girilmez. Aynı Wi-Fi çalışıp internet çalışmıyorsa sorun neredeyse her zaman modemdedir. Modem arayüzündeki WAN IP ile buradaki İnternet IP aynı değilse yönlendirme eve ulaşmaz." : "Nobody outside can join if the server is off, Windows Firewall blocks Java, or the router forwards the TCP port to the wrong computer or not at all. When Wi-Fi works and the internet does not, the router is the usual cause. If the router's WAN address is not the Internet address shown here, the forward never reaches this house."; font-size: 12px; font-family: "Play"; color: root.c-text-secondary; wrap: word-wrap; }
+                                }
+                            }
+                            Rectangle {
+                                vertical-stretch: 0; background: root.c-bg-card; border-radius: 2px;
+                                VerticalLayout {
+                                    padding: 12px; spacing: 4px;
+                                    Text { text: "CGNAT"; font-size: 13px; font-weight: 700; font-family: "Play"; color: #f0f0f0; }
+                                    Text { text: app-lang == "tr" ? "CGNAT'ta sağlayıcı birçok evi tek dış IP arkasında tutar. 100.64 ile 100.127 arasındaki adres budur. Modemde port açsan da kapı senin hattına değil, ortak havuza gelir. Çözüm: sağlayıcıdan gerçek IP istemek ya da Playit gibi bir tünel. Reverse DNS bunu düzeltmez. Türk Telekom hattında ters kayıt dynamic.ttnet.com.tr olur. O senin DuckDNS adın değildir." : "With CGNAT the ISP puts many homes behind one public address. 100.64 through 100.127 is that range. A port forward on the modem lands in the shared pool, not on your line. Ask the ISP for a real IP, or use a tunnel such as Playit. Reverse DNS does not fix this. On Turk Telekom the reverse name is dynamic.ttnet.com.tr. That is not your DuckDNS name."; font-size: 12px; font-family: "Play"; color: root.c-text-secondary; wrap: word-wrap; }
+                                }
+                            }
+                        }
                     }
                     OptionCard {
                         title: app-lang == "tr" ? "Beyaz liste" : "Whitelist";

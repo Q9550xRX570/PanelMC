@@ -56,7 +56,7 @@ fn now_unix() -> u64 {
 
 fn http_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
-        .user_agent("PanelMC/0.1")
+        .user_agent(concat!("PanelMC/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(600))
         .redirect(reqwest::redirect::Policy::limited(8))
         .build()

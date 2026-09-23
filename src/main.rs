@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -30,6 +30,8 @@ struct ServerMetadata {
     selected_java: String,
     #[serde(default = "default_timezone")]
     timezone: String,
+    #[serde(default)]
+    join_host: String,
 }
 
 fn default_java_ver() -> String { "java25".to_string() }
@@ -63,11 +65,40 @@ struct SpigetIcon {
     url: Option<String>,
 }
 #[derive(serde::Deserialize)]
-struct PaperBuildsResponse { builds: Vec<u32> }
-#[derive(serde::Deserialize)]
 struct PurpurVersionsResponse { versions: Vec<String> }
 #[derive(serde::Deserialize)]
-struct PaperVersionsResponse { versions: Vec<String> }
+struct MojangManifest { versions: Vec<MojangManifestEntry> }
+#[derive(serde::Deserialize)]
+struct MojangManifestEntry {
+    id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    url: String,
+}
+#[derive(serde::Deserialize)]
+struct MojangVersionMeta { downloads: MojangDownloads }
+#[derive(serde::Deserialize)]
+struct MojangDownloads { server: Option<MojangDownload> }
+#[derive(serde::Deserialize)]
+struct MojangDownload { url: String }
+#[derive(serde::Deserialize)]
+struct FabricEntry {
+    version: String,
+    stable: bool,
+}
+#[derive(serde::Deserialize)]
+struct FillProject { versions: serde_json::Map<String, serde_json::Value> }
+#[derive(serde::Deserialize)]
+struct FillLatestBuild { downloads: FillDownloads }
+#[derive(serde::Deserialize)]
+struct FillDownloads {
+    #[serde(rename = "server:default")]
+    server: Option<FillFile>,
+}
+#[derive(serde::Deserialize)]
+struct FillFile { url: String }
+#[derive(serde::Deserialize)]
+struct GithubRelease { tag_name: String, html_url: String }
 
 struct ServerProcess {
     child: Option<Child>,
@@ -184,7 +215,7 @@ fn http_client() -> &'static reqwest::blocking::Client {
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::blocking::Client::builder()
-            .user_agent("PanelMC/0.1")
+            .user_agent(concat!("PanelMC/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(8))
             .pool_max_idle_per_host(2)
@@ -195,7 +226,7 @@ fn http_client() -> &'static reqwest::blocking::Client {
 
 fn http_client_long() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
-        .user_agent("PanelMC/0.1")
+        .user_agent(concat!("PanelMC/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(600))
         .connect_timeout(Duration::from_secs(15))
         .pool_max_idle_per_host(1)
@@ -785,6 +816,8 @@ struct PanelSettings {
     google_client_secret: String,
     #[serde(default)]
     onedrive_client_id: String,
+    #[serde(default)]
+    cloudflare_token: String,
 }
 
 fn panel_settings_path() -> PathBuf {
@@ -908,6 +941,7 @@ fn snapshot_panel_settings(ui: &MainWindow) -> PanelSettings {
         google_client_id: ui.get_cloud_google_client_id().to_string(),
         google_client_secret: ui.get_cloud_google_secret().to_string(),
         onedrive_client_id: ui.get_cloud_onedrive_client_id().to_string(),
+        cloudflare_token: ui.get_cloudflare_token().to_string(),
     }
 }
 
@@ -1341,65 +1375,364 @@ fn format_version_rows(versions: Vec<String>) -> Vec<VersionRow> {
     rows
 }
 
+fn http_json<T: serde::de::DeserializeOwned>(client: &reqwest::blocking::Client, url: &str) -> Result<T, String> {
+    let resp = client.get(url).send().map_err(|e| e.to_string())?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {status}"));
+    }
+    resp.json::<T>().map_err(|e| e.to_string())
+}
+
+fn parse_version(tag: &str) -> Option<(u64, u64, u64)> {
+    let tag = tag.trim().trim_start_matches('v');
+    let mut parts = tag.split(['.', '-']);
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch_src = parts.next().unwrap_or("0");
+    let patch: String = patch_src.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let patch = if patch.is_empty() { 0 } else { patch.parse().ok()? };
+    Some((major, minor, patch))
+}
+
+fn vanilla_versions(client: &reqwest::blocking::Client) -> Result<Vec<String>, String> {
+    let manifest: MojangManifest = http_json(client, "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")?;
+    Ok(manifest.versions.into_iter().filter(|v| v.kind == "release").take(40).map(|v| v.id).collect())
+}
+
+fn vanilla_server_url(client: &reqwest::blocking::Client, version: &str) -> Result<String, String> {
+    let manifest: MojangManifest = http_json(client, "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")?;
+    let entry = manifest.versions.into_iter().find(|v| v.id == version)
+        .ok_or_else(|| format!("Vanilla {version} Mojang listesinde yok."))?;
+    let meta: MojangVersionMeta = http_json(client, &entry.url)?;
+    meta.downloads.server.map(|d| d.url).ok_or_else(|| format!("Vanilla {version} için sunucu jar yok."))
+}
+
+fn fabric_versions(client: &reqwest::blocking::Client) -> Result<Vec<String>, String> {
+    let games: Vec<FabricEntry> = http_json(client, "https://meta.fabricmc.net/v2/versions/game")?;
+    Ok(games.into_iter().filter(|g| g.stable).take(40).map(|g| g.version).collect())
+}
+
+fn fabric_server_url(client: &reqwest::blocking::Client, version: &str) -> Result<String, String> {
+    let loaders: Vec<FabricEntry> = http_json(client, "https://meta.fabricmc.net/v2/versions/loader")?;
+    let installers: Vec<FabricEntry> = http_json(client, "https://meta.fabricmc.net/v2/versions/installer")?;
+    let loader = loaders.iter().find(|l| l.stable).or(loaders.first())
+        .ok_or_else(|| "Fabric loader bulunamadı.".to_string())?;
+    let installer = installers.iter().find(|l| l.stable).or(installers.first())
+        .ok_or_else(|| "Fabric installer bulunamadı.".to_string())?;
+    Ok(format!(
+        "https://meta.fabricmc.net/v2/versions/loader/{}/{}/{}/server/jar",
+        version, loader.version, installer.version
+    ))
+}
+
+fn primary_lan_ip() -> String {
+    let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") else { return String::new() };
+    if socket.connect("1.1.1.1:80").is_err() { return String::new() }
+    match socket.local_addr() {
+        Ok(addr) => {
+            let ip = addr.ip();
+            if ip.is_ipv4() && !ip.is_loopback() { ip.to_string() } else { String::new() }
+        }
+        Err(_) => String::new(),
+    }
+}
+
+static PUBLIC_IP: Mutex<Option<String>> = Mutex::new(None);
+static WAN_TRIED: AtomicBool = AtomicBool::new(false);
+
+fn set_public_ip(ip: String) {
+    if let Ok(mut guard) = PUBLIC_IP.lock() {
+        *guard = Some(ip);
+    }
+    WAN_TRIED.store(true, Ordering::Relaxed);
+}
+
+fn mark_wan_tried() {
+    WAN_TRIED.store(true, Ordering::Relaxed);
+}
+
+fn valid_port(raw: &str) -> String {
+    match raw.trim().parse::<u16>() {
+        Ok(port) if port > 0 => port.to_string(),
+        _ => "25565".to_string(),
+    }
+}
+
+fn apply_join(ui: &MainWindow, port: &str) {
+    let port = valid_port(port);
+    let lan = primary_lan_ip();
+    let lan_show = if lan.is_empty() {
+        format!("127.0.0.1:{port}")
+    } else {
+        format!("{lan}:{port}")
+    };
+    ui.set_join_lan(lan_show.clone().into());
+    ui.set_server_ip(lan_show.into());
+    let known = PUBLIC_IP.lock().ok().and_then(|guard| guard.clone());
+    let wan = if let Some(ip) = known.as_deref() {
+        format!("{ip}:{port}")
+    } else if WAN_TRIED.load(Ordering::Relaxed) {
+        if ui.get_app_lang() == "tr" { "alınamadı".to_string() } else { "unavailable".to_string() }
+    } else {
+        "…".to_string()
+    };
+    ui.set_join_wan(wan.into());
+    let host = ui.get_join_host().trim().to_string();
+    if host.is_empty() {
+        ui.set_join_play("".into());
+    } else {
+        ui.set_join_play(host.into());
+    }
+    let warn = match known.as_deref() {
+        Some(ip) if is_cgnat(ip) => {
+            if ui.get_app_lang() == "tr" {
+                "Bu dış IP CGNAT aralığında (100.64). Port yönlendirme çalışmaz.".to_string()
+            } else {
+                "This public IP is in the CGNAT range (100.64). Port forwarding will not work.".to_string()
+            }
+        }
+        _ => String::new(),
+    };
+    ui.set_join_warn(warn.into());
+}
+
+fn is_cgnat(ip: &str) -> bool {
+    let Ok(addr) = ip.parse::<std::net::Ipv4Addr>() else { return false };
+    let o = addr.octets();
+    o[0] == 100 && (64..128).contains(&o[1])
+}
+
+fn valid_hostname(raw: &str) -> Result<String, String> {
+    let host = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.len() < 4 || host.len() > 253 || !host.contains('.') {
+        return Err("Alan adı geçersiz. Örnek: mc.duckdns.org".into());
+    }
+    let ok = host.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    });
+    if !ok {
+        return Err("Alan adında sadece harf, rakam ve tire olabilir.".into());
+    }
+    Ok(host)
+}
+
+fn cf_call(token: &str, method: &str, url: &str, body: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    let client = http_client();
+    let builder = match method {
+        "POST" => client.post(url),
+        "PUT" => client.put(url),
+        _ => client.get(url),
+    };
+    let builder = builder
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json");
+    let response = match body {
+        Some(body) => builder.json(&body).send(),
+        None => builder.send(),
+    }.map_err(|e| e.to_string())?;
+    let status = response.status();
+    let value: serde_json::Value = response.json().map_err(|e| e.to_string())?;
+    let success = value.get("success").and_then(|v| v.as_bool()).unwrap_or(status.is_success());
+    if !success {
+        let msg = value["errors"][0]["message"].as_str().unwrap_or("Cloudflare reddetti");
+        return Err(msg.to_string());
+    }
+    Ok(value)
+}
+
+fn publish_minecraft_dns(token: &str, host: &str, ip: &str, port: u16) -> Result<String, String> {
+    let zones = cf_call(token, "GET", "https://api.cloudflare.com/client/v4/zones?per_page=50", None)?;
+    let list = zones["result"].as_array().ok_or("Cloudflare bölge listesi boş.")?;
+    let zone = list.iter().filter_map(|z| {
+        let name = z["name"].as_str()?;
+        let id = z["id"].as_str()?;
+        if host == name || host.ends_with(&format!(".{name}")) {
+            Some((name.len(), id.to_string(), name.to_string()))
+        } else {
+            None
+        }
+    }).max_by_key(|item| item.0).ok_or("Bu alan adı token'daki bir Cloudflare bölgesine ait değil.")?;
+    let zone_id = zone.1;
+    upsert_a(token, &zone_id, host, ip)?;
+    upsert_srv(token, &zone_id, host, port)?;
+    Ok(format!("{host} için A ve SRV yazıldı. Oyuncu port yazmadan {host} girer."))
+}
+
+fn upsert_a(token: &str, zone_id: &str, host: &str, ip: &str) -> Result<(), String> {
+    let url = format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?type=A&name={host}");
+    let existing = cf_call(token, "GET", &url, None)?;
+    let body = serde_json::json!({
+        "type": "A",
+        "name": host,
+        "content": ip,
+        "ttl": 120,
+        "proxied": false
+    });
+    if let Some(id) = existing["result"][0]["id"].as_str() {
+        let put = format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{id}");
+        cf_call(token, "PUT", &put, Some(body))?;
+    } else {
+        let post = format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records");
+        cf_call(token, "POST", &post, Some(body))?;
+    }
+    Ok(())
+}
+
+fn upsert_srv(token: &str, zone_id: &str, host: &str, port: u16) -> Result<(), String> {
+    let name = format!("_minecraft._tcp.{host}");
+    let url = format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?type=SRV&name={name}");
+    let existing = cf_call(token, "GET", &url, None)?;
+    let body = serde_json::json!({
+        "type": "SRV",
+        "name": name,
+        "ttl": 120,
+        "data": { "priority": 0, "weight": 5, "port": port, "target": host }
+    });
+    if let Some(id) = existing["result"][0]["id"].as_str() {
+        let put = format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{id}");
+        cf_call(token, "PUT", &put, Some(body))?;
+    } else {
+        let post = format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records");
+        cf_call(token, "POST", &post, Some(body))?;
+    }
+    Ok(())
+}
+
+fn fetch_public_ip() -> Option<String> {
+    let client = http_client();
+    let text = client.get("https://api.ipify.org").send().ok()?.text().ok()?;
+    let ip = text.trim();
+    ip.parse::<std::net::Ipv4Addr>().ok()?;
+    Some(ip.to_string())
+}
+
+fn newer_release(local: &str, remote_tag: &str) -> bool {
+    match (parse_version(local), parse_version(remote_tag)) {
+        (Some(local), Some(remote)) => remote > local,
+        _ => false,
+    }
+}
+
+fn open_url(url: &str) {
+    if url.is_empty() || url.contains('"') || url.contains(' ') { return; }
+    #[cfg(target_os = "windows")]
+    {
+        let cmdline = format!("start \"\" \"{url}\"");
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", &cmdline]);
+        hide_window(&mut cmd);
+        let _ = cmd.spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if Command::new("xdg-open").arg(url).spawn().is_err() {
+            let _ = Command::new("gio").args(["open", url]).spawn();
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("open").arg(url).spawn();
+    }
+}
+
+fn copy_text(text: &str) {
+    if text.is_empty() || text == "…" || text == "alınamadı" || text == "unavailable" { return; }
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("clip");
+        cmd.stdin(Stdio::piped());
+        hide_window(&mut cmd);
+        if let Ok(mut child) = cmd.spawn() {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut wl = Command::new("wl-copy");
+        wl.stdin(Stdio::piped());
+        if let Ok(mut child) = wl.spawn() {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            return;
+        }
+        let mut xclip = Command::new("xclip");
+        xclip.args(["-selection", "clipboard"]).stdin(Stdio::piped());
+        if let Ok(mut child) = xclip.spawn() {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = Command::new("pbcopy");
+        cmd.stdin(Stdio::piped());
+        if let Ok(mut child) = cmd.spawn() {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+        }
+    }
+}
+
+fn paper_versions(client: &reqwest::blocking::Client) -> Result<Vec<String>, String> {
+    let project: FillProject = http_json(client, "https://fill.papermc.io/v3/projects/paper")?;
+    let mut list = Vec::new();
+    for value in project.versions.values() {
+        if let Some(arr) = value.as_array() {
+            for item in arr {
+                if let Some(version) = item.as_str() {
+                    list.push(version.to_string());
+                }
+            }
+        }
+    }
+    list.truncate(48);
+    Ok(list)
+}
+
+fn paper_server_url(client: &reqwest::blocking::Client, version: &str) -> Result<String, String> {
+    let url = format!("https://fill.papermc.io/v3/projects/paper/versions/{version}/builds/latest");
+    let build: FillLatestBuild = http_json(client, &url)?;
+    build.downloads.server.map(|f| f.url).ok_or_else(|| format!("Paper {version} için jar yok."))
+}
+
 fn fetch_versions_for_software(software: &str) -> Vec<String> {
     let client = http_client();
 
-    match software {
-        "Purpur" => {
-            if let Ok(resp) = client.get("https://api.purpurmc.org/v2/purpur").send() {
-                if let Ok(data) = resp.json::<PurpurVersionsResponse>() {
-                    let mut list = data.versions;
-                    list.reverse();
-                    return list;
-                }
-            }
-        },
-        "Paper" => {
-            if let Ok(resp) = client.get("https://api.papermc.io/v2/projects/paper").send() {
-                if let Ok(data) = resp.json::<PaperVersionsResponse>() {
-                    let mut list = data.versions;
-                    list.reverse();
-                    return list;
-                }
-            }
-        },
-        _ => {}
-    }
+    let fetched = match software {
+        "Purpur" => client.get("https://api.purpurmc.org/v2/purpur").send().ok()
+            .and_then(|r| r.json::<PurpurVersionsResponse>().ok())
+            .map(|data| {
+                let mut list = data.versions;
+                list.reverse();
+                list.truncate(40);
+                list
+            }),
+        "Paper" => paper_versions(client).ok(),
+        "Vanilla" => vanilla_versions(client).ok(),
+        "Fabric" => fabric_versions(client).ok(),
+        _ => None,
+    };
 
-    vec![
-        "1.21.4".into(), "1.21.3".into(), "1.21.1".into(), "1.21".into(),
-        "1.20.6".into(), "1.20.4".into(), "1.20.2".into(), "1.20.1".into(),
-        "1.19.4".into(), "1.19.3".into(), "1.19.2".into(), "1.19".into(),
-        "1.18.2".into(), "1.18.1".into(), "1.17.1".into(), "1.16.5".into(),
-        "1.16.4".into(), "1.15.2".into(), "1.14.4".into(), "1.12.2".into(),
-    ]
+    fetched.unwrap_or_default()
 }
 
 fn resolve_server_url(client: &reqwest::blocking::Client, software: &str, version: &str) -> Result<String, String> {
     match software {
-        "Purpur" => Ok(format!("https://api.purpurmc.org/v2/purpur/{}/latest/download", version)),
-        "Paper" => {
-            let builds_url = format!("https://api.papermc.io/v2/projects/paper/versions/{}/builds", version);
-            let resp: PaperBuildsResponse = client.get(&builds_url).send().map_err(|e| e.to_string())?.json().map_err(|e| e.to_string())?;
-            if let Some(latest_build) = resp.builds.last() {
-                Ok(format!(
-                    "https://api.papermc.io/v2/projects/paper/versions/{}/builds/{}/downloads/paper-{}-{}.jar",
-                    version, latest_build, version, latest_build
-                ))
-            } else {
-                Err("PaperMC için derleme bulunamadı.".to_string())
-            }
-        },
-        "Fabric" => Ok(format!("https://meta.fabricmc.net/v2/versions/loader/{}/0.15.7/1.0.0/server/jar", version)),
-        _ => match version {
-            "1.21.4" => Ok("https://piston-data.mojang.com/v1/objects/4707d00eb834b446575d89a61a11b5d548d8c001/server.jar".to_string()),
-            "1.20.4" => Ok("https://piston-data.mojang.com/v1/objects/8dd1a28015f51b1803216161b00b72d16226d424/server.jar".to_string()),
-            "1.20.1" => Ok("https://piston-data.mojang.com/v1/objects/84194a5c757ade21d009681f256e86b756125d40/server.jar".to_string()),
-            "1.19.4" => Ok("https://piston-data.mojang.com/v1/objects/8f3112a10497510b64d0a7a3717208d8b7b65416/server.jar".to_string()),
-            "1.18.2" => Ok("https://launcher.mojang.com/v1/objects/c8f83c5655308435f3d304c1a6964ac6d4d42047/server.jar".to_string()),
-            "1.16.5" => Ok("https://launcher.mojang.com/v1/objects/1b557e7b033b583cd9f66746b7a9ab1ec1673ced/server.jar".to_string()),
-            _ => Ok("https://piston-data.mojang.com/v1/objects/8dd1a28015f51b1803216161b00b72d16226d424/server.jar".to_string()),
-        }
+        "Purpur" => Ok(format!("https://api.purpurmc.org/v2/purpur/{version}/latest/download")),
+        "Paper" => paper_server_url(client, version),
+        "Fabric" => fabric_server_url(client, version),
+        "Vanilla" => vanilla_server_url(client, version),
+        _ => Err(format!("{software} jar indirmesi bu sürümde yok. Vanilla, Paper, Purpur veya Fabric seç.")),
     }
 }
 
@@ -1546,6 +1879,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let lang = detect_system_language();
     ui.set_is_dark_theme(is_dark);
     ui.set_app_lang(lang.into());
+    ui.set_app_version(env!("CARGO_PKG_VERSION").into());
     let panel = load_panel_settings();
     let onedrive = detect_onedrive_folder();
     let gdrive = detect_gdrive_folder();
@@ -1556,6 +1890,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_cloud_google_client_id(panel.google_client_id.clone().into());
     ui.set_cloud_google_secret(panel.google_client_secret.clone().into());
     ui.set_cloud_onedrive_client_id(panel.onedrive_client_id.clone().into());
+    ui.set_cloudflare_token(panel.cloudflare_token.clone().into());
     let tokens = cloud::load_tokens();
     ui.set_cloud_google_email(tokens.google.as_ref().map(|t| t.email.clone()).unwrap_or_default().into());
     ui.set_cloud_onedrive_email(tokens.onedrive.as_ref().map(|t| t.email.clone()).unwrap_or_default().into());
@@ -1595,6 +1930,7 @@ fn main() -> Result<(), slint::PlatformError> {
             ram: "2G".to_string(),
             selected_java: "java25".to_string(),
             timezone: "Europe/Istanbul".to_string(),
+            join_host: String::new(),
         };
         let target_dir = get_server_dir(&default_srv.id);
         let _ = fs::create_dir_all(&target_dir);
@@ -1639,6 +1975,139 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     sync_java_status(&ui, "java25");
+    apply_join(&ui, "25565");
+
+    let ui_boot = ui.as_weak();
+    thread::spawn(move || {
+        let release = http_json::<GithubRelease>(
+            http_client(),
+            "https://api.github.com/repos/Q9550xRX570/PanelMC/releases/latest",
+        ).ok().filter(|rel| newer_release(env!("CARGO_PKG_VERSION"), &rel.tag_name));
+        if let Some(ip) = fetch_public_ip() {
+            set_public_ip(ip);
+        } else {
+            mark_wan_tried();
+        }
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(ui) = ui_boot.upgrade() else { return };
+            if let Some(rel) = release {
+                let label = if ui.get_app_lang() == "tr" {
+                    format!("Güncelle {}", rel.tag_name)
+                } else {
+                    format!("Update {}", rel.tag_name)
+                };
+                ui.set_update_label(label.into());
+                ui.set_update_url(rel.html_url.into());
+                ui.set_update_available(true);
+            }
+            apply_join(&ui, &ui.get_server_port());
+        });
+    });
+
+    let ui_upd = ui.as_weak();
+    ui.on_open_update(move || {
+        if let Some(ui) = ui_upd.upgrade() {
+            open_url(&ui.get_update_url());
+        }
+    });
+
+    let ui_copy = ui.as_weak();
+    ui.on_copy_text(move |text| {
+        let value = text.to_string();
+        copy_text(&value);
+        if let Some(ui) = ui_copy.upgrade() {
+            let msg = if ui.get_app_lang() == "tr" { "Adres kopyalandı" } else { "Address copied" };
+            ui.set_join_status(msg.into());
+        }
+    });
+
+    let ui_refresh_join = ui.as_weak();
+    ui.on_refresh_join(move || {
+        let ui_thread = ui_refresh_join.clone();
+        thread::spawn(move || {
+            if let Some(ip) = fetch_public_ip() {
+                set_public_ip(ip);
+            } else {
+                mark_wan_tried();
+            }
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_thread.upgrade() {
+                    apply_join(&ui, &ui.get_server_port());
+                }
+            });
+        });
+    });
+
+    let ui_dns = ui.as_weak();
+    let act_id_dns = Arc::clone(&active_server_id);
+    ui.on_save_join_dns(move |host, token| {
+        let Some(ui) = ui_dns.upgrade() else { return };
+        let current_id = act_id_dns.lock().unwrap().clone();
+        if current_id.is_empty() { return; }
+        let host = host.trim().to_string();
+        if !host.is_empty() && valid_hostname(&host).is_err() {
+            ui.set_join_status("Alan adı geçersiz. Örnek: mc.duckdns.org".into());
+            return;
+        }
+        let mut list = load_servers_list();
+        if let Some(srv) = list.iter_mut().find(|s| s.id == current_id) {
+            srv.join_host = host.clone();
+        }
+        save_servers_list(&list);
+        ui.set_join_host(host.into());
+        ui.set_cloudflare_token(token.clone());
+        let mut panel = load_panel_settings();
+        panel.cloudflare_token = token.to_string();
+        save_panel_settings(&panel);
+        apply_join(&ui, &ui.get_server_port());
+        ui.set_join_status(if ui.get_app_lang() == "tr" { "Adres kaydedildi".into() } else { "Address saved".into() });
+    });
+
+    let ui_srv = ui.as_weak();
+    let act_id_srv = Arc::clone(&active_server_id);
+    ui.on_publish_srv(move || {
+        let Some(ui) = ui_srv.upgrade() else { return };
+        let current_id = act_id_srv.lock().unwrap().clone();
+        if current_id.is_empty() { return; }
+        let host = match valid_hostname(&ui.get_join_host()) {
+            Ok(host) => host,
+            Err(e) => {
+                ui.set_join_status(e.into());
+                return;
+            }
+        };
+        let token = ui.get_cloudflare_token().trim().to_string();
+        if token.is_empty() {
+            ui.set_join_status(if ui.get_app_lang() == "tr" {
+                "Cloudflare token yok. DNS → Edit izni olan bir token yapıştır.".into()
+            } else {
+                "Paste a Cloudflare token with DNS edit permission.".into()
+            });
+            return;
+        }
+        let port: u16 = valid_port(&ui.get_server_port()).parse().unwrap_or(25565);
+        let lang_tr = ui.get_app_lang() == "tr";
+        ui.set_join_status(if lang_tr { "SRV yazılıyor...".into() } else { "Writing SRV...".into() });
+        let ui_thread = ui_srv.clone();
+        thread::spawn(move || {
+            let ip = fetch_public_ip();
+            let result = match ip {
+                Some(ip) => {
+                    set_public_ip(ip.clone());
+                    publish_minecraft_dns(&token, &host, &ip, port)
+                }
+                None => Err(if lang_tr { "Dış IP alınamadı.".into() } else { "Public IP unavailable.".into() }),
+            };
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(ui) = ui_thread.upgrade() else { return };
+                match result {
+                    Ok(msg) => ui.set_join_status(msg.into()),
+                    Err(e) => ui.set_join_status(e.into()),
+                }
+                apply_join(&ui, &port.to_string());
+            });
+        });
+    });
 
     // --- 1. DAHİLİ JAVA İNDİRME MOTORU ---
     let ui_java_dl = ui.as_weak();
@@ -1685,6 +2154,9 @@ fn main() -> Result<(), slint::PlatformError> {
 
             let result: Result<PathBuf, String> = (|| {
                 let mut response = client.get(&url).send().map_err(|e| e.to_string())?;
+                if !response.status().is_success() {
+                    return Err(format!("Java indirilemedi (HTTP {}).", response.status()));
+                }
                 let total_size = response.content_length().unwrap_or(0);
 
                 let mut dest_file = File::create(&zip_path).map_err(|e| e.to_string())?;
@@ -1714,6 +2186,11 @@ fn main() -> Result<(), slint::PlatformError> {
                         });
                     }
                 }
+                drop(dest_file);
+
+                if downloaded < 1_000_000 {
+                    return Err("Java arşivi eksik indi.".into());
+                }
 
                 let _ = fs::create_dir_all(&target_extract);
                 extract_jdk_archive(&zip_path, &target_extract)?;
@@ -1725,6 +2202,10 @@ fn main() -> Result<(), slint::PlatformError> {
                     Err(format!("{} çıkarılamadı.", java_bin()))
                 }
             })();
+
+            if result.is_err() {
+                let _ = fs::remove_file(&zip_path);
+            }
 
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui_thread.upgrade() {
@@ -1782,9 +2263,10 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.set_selected_software(srv.software.into());
             ui.set_selected_version(srv.version.into());
             ui.set_server_port(srv.port.clone().into());
+            ui.set_join_host(srv.join_host.clone().into());
             ui.set_server_ram(srv.ram.clone().into());
             apply_ram_to_ui(&ui, &srv.ram);
-            ui.set_server_ip(format!("127.0.0.1:{}", srv.port).into());
+            apply_join(&ui, &srv.port);
             ui.set_active_server_selected_java(srv.selected_java.clone().into());
             ui.set_prop_timezone(srv.timezone.clone().into());
 
@@ -1830,7 +2312,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let name_str = name.trim().to_string();
         if name_str.is_empty() { return; }
 
-        let port_str = if port.trim().is_empty() { "25565".to_string() } else { port.trim().to_string() };
+        let port_str = valid_port(&port);
         let mut list = load_servers_list();
 
         let id = format!("server-{}", list.len() + 1);
@@ -1839,13 +2321,17 @@ fn main() -> Result<(), slint::PlatformError> {
             name: name_str,
             software: "Purpur".to_string(),
             version: "26.2".to_string(),
-            port: port_str,
+            port: port_str.clone(),
             ram: "2G".to_string(),
             selected_java: "java25".to_string(),
             timezone: "Europe/Istanbul".to_string(),
+            join_host: String::new(),
         };
 
         let _ = fs::create_dir_all(get_server_dir(&id));
+        let mut port_map = HashMap::new();
+        port_map.insert("server-port".to_string(), port_str);
+        let _ = save_server_properties_of(&id, &port_map);
         list.push(new_srv);
         save_servers_list(&list);
 
@@ -1984,11 +2470,20 @@ fn main() -> Result<(), slint::PlatformError> {
         let ui_t = ui_soft.clone();
         thread::spawn(move || {
             let versions = fetch_versions_for_software(&soft_str);
+            let note = if versions.is_empty() {
+                match soft_str.as_str() {
+                    "Forge" | "NeoForge" => "Forge ve NeoForge bu sürümde kurulmuyor. Fabric kullan.".to_string(),
+                    _ => "Sürüm listesi alınamadı.".to_string(),
+                }
+            } else {
+                "Hazır".to_string()
+            };
             let rows = format_version_rows(versions);
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui_t.upgrade() {
                     let model: slint::ModelRc<VersionRow> = std::rc::Rc::new(slint::VecModel::from(rows)).into();
                     ui.set_version_rows(model);
+                    ui.set_download_status(note.into());
                 }
             });
         });
@@ -2013,23 +2508,20 @@ fn main() -> Result<(), slint::PlatformError> {
         let version_str = version.to_string();
         let target_dir = get_server_dir(&current_id);
 
-        let mut list = load_servers_list();
-        if let Some(srv) = list.iter_mut().find(|s| s.id == current_id) {
-            srv.software = software_str.clone();
-            srv.version = version_str.clone();
-        }
-        save_servers_list(&list);
-
         thread::spawn(move || {
             let client = http_client_long();
             let jar_dest = target_dir.join("server.jar");
+            let partial = target_dir.join("server.jar.partial");
 
             let result: Result<(), String> = (|| {
                 let target_url = resolve_server_url(&client, &software_str, &version_str)?;
                 let mut response = client.get(&target_url).send().map_err(|e| e.to_string())?;
+                if !response.status().is_success() {
+                    return Err(format!("Jar indirilemedi (HTTP {}).", response.status()));
+                }
                 let total_size = response.content_length().unwrap_or(0);
 
-                let mut dest_file = File::create(&jar_dest).map_err(|e| e.to_string())?;
+                let mut dest_file = File::create(&partial).map_err(|e| e.to_string())?;
                 let mut downloaded: u64 = 0;
                 let mut buffer = [0u8; 32768];
                 let mut last_update = Instant::now();
@@ -2056,6 +2548,14 @@ fn main() -> Result<(), slint::PlatformError> {
                         });
                     }
                 }
+                drop(dest_file);
+                if downloaded < 100_000 {
+                    return Err("İnen dosya sunucu jar'ı değil. Kurulum iptal edildi.".into());
+                }
+                if jar_dest.exists() {
+                    fs::remove_file(&jar_dest).map_err(|e| e.to_string())?;
+                }
+                fs::rename(&partial, &jar_dest).map_err(|e| e.to_string())?;
 
                 let eula_file = target_dir.join("eula.txt");
                 let mut eula = File::create(eula_file).map_err(|e| e.to_string())?;
@@ -2064,11 +2564,23 @@ fn main() -> Result<(), slint::PlatformError> {
                 Ok(())
             })();
 
+            if result.is_err() {
+                let _ = fs::remove_file(&partial);
+            }
+
+            let software_done = software_str.clone();
+            let version_done = version_str.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui_thread.upgrade() {
                     ui.set_is_downloading(false);
                     match result {
                         Ok(_) => {
+                            let mut list = load_servers_list();
+                            if let Some(srv) = list.iter_mut().find(|s| s.id == current_id) {
+                                srv.software = software_done;
+                                srv.version = version_done;
+                            }
+                            save_servers_list(&list);
                             ui.set_download_progress(1.0);
                             ui.set_download_details("Kurulum tamamlandı!".into());
                             ui.set_download_status("Başarıyla Kuruldu ✓ (EULA Onaylandı)".into());
@@ -2771,8 +3283,12 @@ fn main() -> Result<(), slint::PlatformError> {
 
         ui.set_server_error_message("".into());
 
-        let port = list.iter().find(|s| s.id == current_id).map(|s| s.port.clone())
-            .unwrap_or_else(|| ui.get_server_port().to_string());
+        let port = valid_port(&list.iter().find(|s| s.id == current_id).map(|s| s.port.clone())
+            .unwrap_or_else(|| ui.get_server_port().to_string()));
+        let mut port_map = HashMap::new();
+        port_map.insert("server-port".to_string(), port.clone());
+        let _ = save_server_properties_of(&current_id, &port_map);
+        apply_join(&ui, &port);
 
         persist_ram_for(&current_id, &ui.get_ram_amount(), &ui.get_ram_unit());
         apply_ram_to_ui(&ui, &ram_stored(&ui.get_ram_amount(), &ui.get_ram_unit()));
