@@ -3,6 +3,7 @@
 slint::include_modules!();
 
 mod cloud;
+mod playit;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
@@ -32,6 +33,8 @@ struct ServerMetadata {
     timezone: String,
     #[serde(default)]
     join_host: String,
+    #[serde(default)]
+    backup_every_min: u32,
 }
 
 fn default_java_ver() -> String { "java25".to_string() }
@@ -777,31 +780,136 @@ fn zip_world_folder(
 }
 
 fn backup_worlds_of(server_id: &str) -> Result<String, String> {
+    backup_worlds_prefixed(server_id, "yedek")
+}
+
+fn backup_every_min(raw: u32) -> u32 {
+    match raw {
+        30 | 60 | 360 => raw,
+        _ => 0,
+    }
+}
+
+fn backup_is_due(last: Option<SystemTime>, every_min: u32, now: SystemTime) -> bool {
+    let every = backup_every_min(every_min);
+    if every == 0 {
+        return false;
+    }
+    match last {
+        None => false,
+        Some(t) => now
+            .duration_since(t)
+            .map(|d| d.as_secs() >= u64::from(every) * 60)
+            .unwrap_or(true),
+    }
+}
+
+fn auto_backup_allowed(free: Option<u64>) -> bool {
+    match free {
+        Some(n) => n >= 2 * 1024 * 1024 * 1024,
+        None => true,
+    }
+}
+
+fn save_finished(tail: &str) -> bool {
+    tail.contains("Saved the game")
+}
+
+fn backup_worlds_prefixed(server_id: &str, prefix: &str) -> Result<String, String> {
     let worlds = get_worlds_of(server_id);
-    if worlds.is_empty() {
+    let server_dir = get_server_dir(server_id);
+    let folders: Vec<String> = worlds
+        .iter()
+        .map(|w| w.name.to_string())
+        .filter(|name| server_dir.join(name).is_dir())
+        .collect();
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    backup_folders(&server_dir, &folders, prefix, ts)
+}
+
+fn backup_folders(server_dir: &Path, folders: &[String], prefix: &str, ts: u64) -> Result<String, String> {
+    if folders.is_empty() {
         return Err("Dünya klasörü yok. Sunucuyu bir kez çalıştırın.".into());
     }
-    let server_dir = get_server_dir(server_id);
+    if !prefix.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err("Geçersiz yedek adı.".into());
+    }
     let backups = server_dir.join("backups");
     fs::create_dir_all(&backups).map_err(|e| e.to_string())?;
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let name = format!("yedek-{}.zip", ts);
+    let name = format!("{prefix}-{ts}.zip");
     let zip_path = backups.join(&name);
     let file = File::create(&zip_path).map_err(|e| e.to_string())?;
     let mut zip = ZipWriter::new(file);
     let mut buf = vec![0u8; 32 * 1024];
-    for world in &worlds {
-        let folder = server_dir.join(world.name.as_str());
-        if folder.is_dir() {
-            zip_world_folder(&mut zip, &folder, world.name.as_str(), &mut buf)
-                .map_err(|e| e.to_string())?;
+    let mut wrote = false;
+    for folder_name in folders {
+        if !is_safe_leaf_name(folder_name) {
+            continue;
         }
+        let folder = server_dir.join(folder_name);
+        if folder.is_dir() {
+            zip_world_folder(&mut zip, &folder, folder_name, &mut buf).map_err(|e| e.to_string())?;
+            wrote = true;
+        }
+    }
+    if !wrote {
+        let _ = fs::remove_file(&zip_path);
+        return Err("Dünya klasörü yok. Sunucuyu bir kez çalıştırın.".into());
     }
     zip.finish().map_err(|e| e.to_string())?;
     Ok(name)
+}
+
+fn prune_backups(server_dir: &Path, prefix: &str, keep: usize) -> Vec<String> {
+    let dir = server_dir.join("backups");
+    let mut names = Vec::new();
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(&format!("{prefix}-")) && name.ends_with(".zip") && entry.path().is_file() {
+                names.push(name);
+            }
+        }
+    }
+    names.sort();
+    let mut removed = Vec::new();
+    while names.len() > keep {
+        let name = names.remove(0);
+        if fs::remove_file(dir.join(&name)).is_ok() {
+            removed.push(name);
+        }
+    }
+    removed
+}
+
+fn wait_until_saved(server_id: &str, timeout: Duration) -> bool {
+    let path = get_server_dir(server_id).join("logs").join("latest.log");
+    let start_len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0) as usize;
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        thread::sleep(Duration::from_millis(200));
+        let Ok(data) = fs::read(&path) else { continue };
+        let tail = if data.len() > start_len {
+            String::from_utf8_lossy(&data[start_len..]).into_owned()
+        } else {
+            String::new()
+        };
+        if save_finished(&tail) {
+            return true;
+        }
+    }
+    false
+}
+
+fn send_console_line(procs: &Mutex<HashMap<String, ServerProcess>>, id: &str, line: &str) -> bool {
+    let mut procs = procs.lock().unwrap();
+    let Some(proc) = procs.get_mut(id) else { return false };
+    let Some(stdin) = proc.stdin.as_mut() else { return false };
+    if writeln!(stdin, "{line}").is_err() || stdin.flush().is_err() {
+        return false;
+    }
+    proc.append_log(format!("> {line}"));
+    true
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
@@ -1052,7 +1160,7 @@ fn ram_stored(amount: &str, unit: &str) -> String {
     if unit.eq_ignore_ascii_case("MB") {
         format!("{}M", n.max(256))
     } else {
-        format!("{}G", n.min(32).max(1))
+        format!("{}G", n.clamp(1, 32))
     }
 }
 
@@ -1090,6 +1198,155 @@ fn sha1_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha1::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+fn write_varint(out: &mut Vec<u8>, mut value: i32) {
+    loop {
+        let mut byte = (value & 0x7F) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
+fn read_varint(stream: &mut TcpStream) -> Option<i32> {
+    let mut num = 0i32;
+    for i in 0..5 {
+        let mut buf = [0u8; 1];
+        stream.read_exact(&mut buf).ok()?;
+        num |= ((buf[0] & 0x7F) as i32) << (7 * i);
+        if buf[0] & 0x80 == 0 {
+            return Some(num);
+        }
+    }
+    None
+}
+
+struct McStatus {
+    online: i32,
+    max: i32,
+    names: String,
+}
+
+fn mc_status(port: &str) -> Option<McStatus> {
+    let port_n: u16 = port.parse().ok()?;
+    let mut stream = TcpStream::connect_timeout(
+        &SocketAddr::from(([127, 0, 0, 1], port_n)),
+        Duration::from_millis(500),
+    ).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+
+    let host = b"localhost";
+    let mut body = Vec::new();
+    write_varint(&mut body, 0);
+    write_varint(&mut body, 47);
+    write_varint(&mut body, host.len() as i32);
+    body.extend_from_slice(host);
+    body.extend_from_slice(&port_n.to_be_bytes());
+    write_varint(&mut body, 1);
+
+    let mut packet = Vec::new();
+    write_varint(&mut packet, body.len() as i32);
+    packet.extend_from_slice(&body);
+    packet.extend_from_slice(&[0x01, 0x00]);
+    stream.write_all(&packet).ok()?;
+
+    let len = read_varint(&mut stream)?;
+    if !(2..=1_048_576).contains(&len) {
+        return None;
+    }
+    let mut payload = vec![0u8; len as usize];
+    stream.read_exact(&mut payload).ok()?;
+    let mut i = 0usize;
+    while i < payload.len() {
+        let b = payload[i];
+        i += 1;
+        if b & 0x80 == 0 {
+            break;
+        }
+    }
+    let mut slen = 0i32;
+    let mut shift = 0;
+    while i < payload.len() && shift <= 28 {
+        let b = payload[i];
+        i += 1;
+        slen |= ((b & 0x7F) as i32) << shift;
+        if b & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+    if slen < 2 || i + slen as usize > payload.len() {
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_slice(&payload[i..i + slen as usize]).ok()?;
+    let players = json.get("players")?;
+    let online = players.get("online")?.as_i64()? as i32;
+    let max = players.get("max")?.as_i64()? as i32;
+    let names = players
+        .get("sample")
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|p| p.get("name").and_then(|n| n.as_str()))
+                .take(8)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    Some(McStatus { online, max, names })
+}
+
+fn format_uptime(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{h}h {m:02}m")
+    } else if m > 0 {
+        format!("{m}m {s:02}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
+fn disk_free_bytes(path: &Path) -> Option<u64> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetDiskFreeSpaceExW(
+                directory: *const u16,
+                available: *mut u64,
+                total: *mut u64,
+                total_free: *mut u64,
+            ) -> i32;
+        }
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let mut available = 0u64;
+        let ok = unsafe {
+            GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, std::ptr::null_mut(), std::ptr::null_mut())
+        };
+        if ok == 0 { None } else { Some(available) }
+    }
+    #[cfg(not(windows))]
+    {
+        let out = Command::new("df")
+            .args(["-B1", "-P", path.to_str()?])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let line = text.lines().nth(1)?;
+        let avail = line.split_whitespace().nth(3)?;
+        avail.parse().ok()
+    }
 }
 
 fn tcp_port_open(port: &str) -> bool {
@@ -1159,6 +1416,7 @@ fn pids_listening_on_port(port: u16) -> Vec<u32> {
                 }
             }
         }
+        #[allow(clippy::needless_return)]
         return pids;
     }
     #[cfg(unix)]
@@ -1357,7 +1615,7 @@ fn format_version_rows(versions: Vec<String>) -> Vec<VersionRow> {
     let mut rows = Vec::new();
     for chunk in versions.chunks(4) {
         let v1 = chunk.first().cloned().unwrap_or_default();
-        let has1 = chunk.first().is_some();
+        let has1 = !chunk.is_empty();
         let v2 = chunk.get(1).cloned().unwrap_or_default();
         let has2 = chunk.get(1).is_some();
         let v3 = chunk.get(2).cloned().unwrap_or_default();
@@ -1854,9 +2112,7 @@ fn download_icon_bytes(client: &reqwest::blocking::Client, url: &str) -> Option<
 }
 
 fn icon_from_url(client: &reqwest::blocking::Client, cache_dir: &Path, slug: &str, url: &str) -> Option<IconPixels> {
-    let Some(url) = normalize_icon_url(url) else {
-        return None;
-    };
+    let url = normalize_icon_url(url)?;
     let path = cache_dir.join(format!("{}.bin", safe_cache_name(slug)));
     if let Ok(existing) = fs::read(&path) {
         if existing.len() >= 24 && existing.len() <= 1_500_000 {
@@ -1874,6 +2130,7 @@ fn icon_from_url(client: &reqwest::blocking::Client, cache_dir: &Path, slug: &st
 
 fn main() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
+    playit::attach(ui.as_weak());
 
     let is_dark = detect_system_dark_theme();
     let lang = detect_system_language();
@@ -1917,6 +2174,8 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let processes = Arc::new(Mutex::new(HashMap::<String, ServerProcess>::new()));
     let active_server_id = Arc::new(Mutex::new(String::new()));
+    let backup_busy: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    let backup_last: Arc<Mutex<HashMap<String, SystemTime>>> = Arc::new(Mutex::new(HashMap::new()));
 
     let _ = fs::create_dir_all("servers");
     let mut current_servers = load_servers_list();
@@ -1931,6 +2190,7 @@ fn main() -> Result<(), slint::PlatformError> {
             selected_java: "java25".to_string(),
             timezone: "Europe/Istanbul".to_string(),
             join_host: String::new(),
+            backup_every_min: 0,
         };
         let target_dir = get_server_dir(&default_srv.id);
         let _ = fs::create_dir_all(&target_dir);
@@ -2111,7 +2371,6 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // --- 1. DAHİLİ JAVA İNDİRME MOTORU ---
     let ui_java_dl = ui.as_weak();
-    let act_id_jdl = Arc::clone(&active_server_id);
     ui.on_download_java_version(move |version| {
         let ui = match ui_java_dl.upgrade() { Some(u) => u, None => return };
 
@@ -2120,7 +2379,6 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.set_java_download_details(format!("Adoptium OpenJDK {} indiriliyor...", version).into());
 
         let ui_thread = ui_java_dl.clone();
-        let act_copy = act_id_jdl.lock().unwrap().clone();
 
         thread::spawn(move || {
             let client = http_client_long();
@@ -2207,13 +2465,13 @@ fn main() -> Result<(), slint::PlatformError> {
                 let _ = fs::remove_file(&zip_path);
             }
 
+            let pref = format!("java{version}");
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui_thread.upgrade() {
                     ui.set_is_downloading_java(false);
                     match result {
                         Ok(_) => {
-                            let pref = if act_copy.is_empty() { "java25" } else { "java25" };
-                            sync_java_status(&ui, pref);
+                            sync_java_status(&ui, &pref);
                             ui.set_java_download_details("Kurulum Tamamlandı! ✓".into());
                             ui.set_server_error_message("".into());
                         }
@@ -2269,6 +2527,7 @@ fn main() -> Result<(), slint::PlatformError> {
             apply_join(&ui, &srv.port);
             ui.set_active_server_selected_java(srv.selected_java.clone().into());
             ui.set_prop_timezone(srv.timezone.clone().into());
+            ui.set_backup_every(backup_every_min(srv.backup_every_min) as i32);
 
             sync_java_status(&ui, &srv.selected_java);
 
@@ -2326,6 +2585,7 @@ fn main() -> Result<(), slint::PlatformError> {
             selected_java: "java25".to_string(),
             timezone: "Europe/Istanbul".to_string(),
             join_host: String::new(),
+            backup_every_min: 0,
         };
 
         let _ = fs::create_dir_all(get_server_dir(&id));
@@ -2699,18 +2959,54 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    let ui_every = ui.as_weak();
+    let act_id_every = Arc::clone(&active_server_id);
+    let last_every = Arc::clone(&backup_last);
+    ui.on_set_backup_every(move |minutes| {
+        let Some(ui) = ui_every.upgrade() else { return };
+        let current_id = act_id_every.lock().unwrap().clone();
+        if current_id.is_empty() { return; }
+        let every = backup_every_min(minutes.max(0) as u32);
+        ui.set_backup_every(every as i32);
+        let mut list = load_servers_list();
+        if let Some(srv) = list.iter_mut().find(|s| s.id == current_id) {
+            srv.backup_every_min = every;
+        }
+        save_servers_list(&list);
+        if every == 0 {
+            last_every.lock().unwrap().remove(&current_id);
+        } else {
+            last_every.lock().unwrap().insert(current_id, SystemTime::now());
+        }
+        let msg = if every == 0 {
+            if ui.get_app_lang() == "tr" { "Otomatik yedek kapalı." } else { "Automatic backup is off." }
+        } else if ui.get_app_lang() == "tr" {
+            "Otomatik yedek kaydedildi. İlk yedek bir aralık sonra."
+        } else {
+            "Automatic backup saved. The first one waits one interval."
+        };
+        ui.set_world_status(msg.into());
+    });
+
     let ui_bak = ui.as_weak();
     let act_id_bak = Arc::clone(&active_server_id);
+    let busy_bak = Arc::clone(&backup_busy);
     ui.on_backup_worlds(move || {
         let ui = match ui_bak.upgrade() { Some(u) => u, None => return };
         let current_id = act_id_bak.lock().unwrap().clone();
         if current_id.is_empty() { return; }
         if ui.get_is_backing_up() { return; }
+        if !busy_bak.lock().unwrap().insert(current_id.clone()) {
+            ui.set_world_status(if ui.get_app_lang() == "tr" { "Yedek zaten alınıyor." } else { "A backup is already running." }.into());
+            return;
+        }
         ui.set_is_backing_up(true);
         ui.set_world_status("Yedek alınıyor...".into());
         let ui_t = ui_bak.clone();
+        let busy_t = Arc::clone(&busy_bak);
         thread::spawn(move || {
             let result = backup_worlds_of(&current_id);
+            busy_t.lock().unwrap().remove(&current_id);
             let id_copy = current_id.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui_t.upgrade() {
@@ -3012,11 +3308,16 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let ui_bu = ui.as_weak();
     let act_id_bu = Arc::clone(&active_server_id);
+    let busy_bu = Arc::clone(&backup_busy);
     ui.on_backup_and_upload(move || {
         let ui = match ui_bu.upgrade() { Some(u) => u, None => return };
         let current_id = act_id_bu.lock().unwrap().clone();
         if current_id.is_empty() { return; }
         if ui.get_is_backing_up() || ui.get_is_uploading_cloud() { return; }
+        if busy_bu.lock().unwrap().contains(&current_id) {
+            ui.set_world_status(if ui.get_app_lang() == "tr" { "Yedek zaten alınıyor." } else { "A backup is already running." }.into());
+            return;
+        }
         let target = ui.get_cloud_target().to_string();
         let folder = ui.get_cloud_folder().to_string();
         let gid = ui.get_cloud_google_client_id().to_string();
@@ -3034,14 +3335,20 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.set_world_status("Önce Uygulama sekmesinden OneDrive ile giriş yapın.".into());
             return;
         }
+        if !busy_bu.lock().unwrap().insert(current_id.clone()) {
+            ui.set_world_status(if ui.get_app_lang() == "tr" { "Yedek zaten alınıyor." } else { "A backup is already running." }.into());
+            return;
+        }
         ui.set_is_backing_up(true);
         ui.set_is_uploading_cloud(true);
         ui.set_world_status("Yedek alınıp buluta gönderiliyor...".into());
         let ui_t = ui_bu.clone();
+        let busy_t = Arc::clone(&busy_bu);
         thread::spawn(move || {
             let result = backup_worlds_of(&current_id).and_then(|name| {
                 push_backup_to_cloud(&current_id, &name, &target, &folder, &gid, &gsec, &oid)
             });
+            busy_t.lock().unwrap().remove(&current_id);
             let id_copy = current_id.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui_t.upgrade() {
@@ -3086,7 +3393,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 if source_str == "SpigotMC" {
                     let encoded = percent_encode_path(&final_query);
                     let resp: Vec<SpigetResource> = client
-                        .get(&format!("https://api.spiget.org/v2/search/resources/{encoded}"))
+                        .get(format!("https://api.spiget.org/v2/search/resources/{encoded}"))
                         .query(&[("size", "12")])
                         .send().map_err(|e| e.to_string())?
                         .json().map_err(|e| e.to_string())?;
@@ -3099,7 +3406,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             .filter(|u| !u.trim().is_empty())
                             .map(|u| u.to_string())
                             .unwrap_or_else(|| format!("https://api.spiget.org/v2/resources/{}/icon", res.id));
-                        let icon_pixels = icon_from_url(&client, &cache_dir, &slug, &icon_url);
+                        let icon_pixels = icon_from_url(client, &cache_dir, &slug, &icon_url);
                         items.push(TempModItem {
                             title: res.name,
                             description: res.tag.unwrap_or_else(|| "Spigot eklentisi.".to_string()),
@@ -3119,7 +3426,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     let mut items = Vec::with_capacity(resp.hits.len());
                     for hit in resp.hits {
                         let icon_pixels = hit.icon_url.as_deref()
-                            .and_then(|url| icon_from_url(&client, &cache_dir, &hit.slug, url));
+                            .and_then(|url| icon_from_url(client, &cache_dir, &hit.slug, url));
                         items.push(TempModItem {
                             title: hit.title,
                             description: hit.description,
@@ -3236,7 +3543,18 @@ fn main() -> Result<(), slint::PlatformError> {
                 if let Some(ui) = ui_thread.upgrade() {
                     match result {
                         Ok(filename) => {
-                            ui.set_mod_status_message(format!("'{}' kuruldu! ✓ (Dosyalar sekmesinden görebilirsiniz)", filename).into());
+                            let hint = if ui.get_server_running() {
+                                if ui.get_app_lang() == "tr" {
+                                    "Kuruldu. Açılması için sunucuyu yeniden başlat."
+                                } else {
+                                    "Installed. Restart the server so it loads."
+                                }
+                            } else if ui.get_app_lang() == "tr" {
+                                "Kuruldu. Sunucu açılınca yüklenecek."
+                            } else {
+                                "Installed. It loads when the server starts."
+                            };
+                            ui.set_mod_status_message(format!("'{}' {}", filename, hint).into());
                             let files_model: slint::ModelRc<FileItem> = std::rc::Rc::new(slint::VecModel::from(get_server_files_of(&current_id))).into();
                             ui.set_server_files(files_model);
                         }
@@ -3545,6 +3863,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let mut cached_id = String::new();
         let mut cached_port = String::new();
         let mut tick: u32 = 0;
+        let mut up_since: Option<Instant> = None;
         loop {
             thread::sleep(Duration::from_secs(1));
             tick = tick.wrapping_add(1);
@@ -3558,9 +3877,13 @@ fn main() -> Result<(), slint::PlatformError> {
             let active = act_id_sync.lock().unwrap().clone();
             if active.is_empty() {
                 cached_id.clear();
+                up_since = None;
                 continue;
             }
-            if active != cached_id || tick % 8 == 0 {
+            if active != cached_id {
+                up_since = None;
+            }
+            if active != cached_id || tick.is_multiple_of(8) {
                 cached_id = active.clone();
                 cached_port = load_servers_list()
                     .into_iter()
@@ -3576,13 +3899,31 @@ fn main() -> Result<(), slint::PlatformError> {
                 procs.get(&active).map(|p| p.child.is_some()).unwrap_or(false)
             };
             let port_open = tcp_port_open(&cached_port);
+            let players = if port_open && tick.is_multiple_of(3) {
+                mc_status(&cached_port)
+            } else {
+                None
+            };
+            let disk = if tick % 15 == 1 {
+                disk_free_bytes(Path::new("servers")).or_else(|| disk_free_bytes(Path::new(".")))
+            } else {
+                None
+            };
             let running = child_alive || port_open;
+            if running {
+                if up_since.is_none() {
+                    up_since = Some(Instant::now());
+                }
+            } else {
+                up_since = None;
+            }
+            let uptime = up_since.map(|t| format_uptime(t.elapsed().as_secs())).unwrap_or_default();
             let detached_log = if running && !child_alive {
                 Some(read_latest_log(&active))
             } else {
                 None
             };
-            let worlds = if running && tick % 5 == 0 {
+            let worlds = if running && tick.is_multiple_of(5) {
                 Some(get_worlds_of(&active))
             } else {
                 None
@@ -3598,6 +3939,21 @@ fn main() -> Result<(), slint::PlatformError> {
                     let was_running = ui.get_server_running();
                     ui.set_server_running(running);
                     ui.set_server_status(if running { "Çalışıyor".into() } else { "Durduruldu".into() });
+                    ui.set_uptime_label(uptime.into());
+                    if !running {
+                        ui.set_players_online(-1);
+                        ui.set_players_max(0);
+                        ui.set_online_names("".into());
+                    } else if let Some(status) = players {
+                        ui.set_players_online(status.online);
+                        ui.set_players_max(status.max);
+                        ui.set_online_names(status.names.into());
+                    }
+                    if let Some(free) = disk {
+                        let low = free < 2 * 1024 * 1024 * 1024;
+                        ui.set_disk_low(low);
+                        ui.set_disk_label(format_bytes(free).into());
+                    }
                     if let Some(text) = detached_log {
                         if ui.get_active_tab() == 2 {
                             ui.set_console_text(text.into());
@@ -3613,5 +3969,222 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    let ui_auto = ui.as_weak();
+    let procs_auto = Arc::clone(&processes);
+    let busy_auto = Arc::clone(&backup_busy);
+    let last_auto = Arc::clone(&backup_last);
+    thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_secs(20));
+            let now = SystemTime::now();
+            for srv in load_servers_list() {
+                let every = backup_every_min(srv.backup_every_min);
+                if every == 0 {
+                    last_auto.lock().unwrap().remove(&srv.id);
+                    continue;
+                }
+                let due = {
+                    let mut last = last_auto.lock().unwrap();
+                    if !last.contains_key(&srv.id) {
+                        last.insert(srv.id.clone(), now);
+                        false
+                    } else {
+                        backup_is_due(last.get(&srv.id).copied(), every, now)
+                    }
+                };
+                if !due {
+                    continue;
+                }
+                {
+                    let mut busy = busy_auto.lock().unwrap();
+                    if !busy.insert(srv.id.clone()) {
+                        continue;
+                    }
+                }
+                let running = server_is_running(&procs_auto.lock().unwrap(), &srv.id);
+                if !running {
+                    busy_auto.lock().unwrap().remove(&srv.id);
+                    continue;
+                }
+                let free = disk_free_bytes(Path::new("servers")).or_else(|| disk_free_bytes(Path::new(".")));
+                if !auto_backup_allowed(free) {
+                    busy_auto.lock().unwrap().remove(&srv.id);
+                    last_auto.lock().unwrap().insert(srv.id.clone(), now);
+                    let id_low = srv.id.clone();
+                    let ui_low = ui_auto.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_low.upgrade() {
+                            if ui.get_active_server_id().as_str() == id_low {
+                                let msg = if ui.get_app_lang() == "tr" {
+                                    "Otomatik yedek atlandı: disk 2 GB altında."
+                                } else {
+                                    "Automatic backup skipped: under 2 GB free."
+                                };
+                                ui.set_world_status(msg.into());
+                            }
+                        }
+                    });
+                    continue;
+                }
+                let id = srv.id.clone();
+                let sent = send_console_line(&procs_auto, &id, "save-all flush");
+                if !sent {
+                    busy_auto.lock().unwrap().remove(&id);
+                    last_auto.lock().unwrap().insert(id.clone(), now);
+                    let ui_skip = ui_auto.clone();
+                    let id_skip = id.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_skip.upgrade() {
+                            if ui.get_active_server_id().as_str() == id_skip {
+                                let msg = if ui.get_app_lang() == "tr" {
+                                    "Otomatik yedek için sunucuyu PanelMC'den başlat."
+                                } else {
+                                    "Start the server from PanelMC for automatic backups."
+                                };
+                                ui.set_world_status(msg.into());
+                            }
+                        }
+                    });
+                    continue;
+                }
+                let ui_begin = ui_auto.clone();
+                let id_begin = id.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_begin.upgrade() {
+                        if ui.get_active_server_id().as_str() == id_begin {
+                            ui.set_is_backing_up(true);
+                            let msg = if ui.get_app_lang() == "tr" { "Otomatik yedek alınıyor..." } else { "Automatic backup..." };
+                            ui.set_world_status(msg.into());
+                        }
+                    }
+                });
+                let _ = wait_until_saved(&id, Duration::from_secs(20));
+                let result = backup_worlds_prefixed(&id, "oto").inspect(|_name| {
+                    prune_backups(&get_server_dir(&id), "oto", 5);
+                });
+                last_auto.lock().unwrap().insert(id.clone(), SystemTime::now());
+                busy_auto.lock().unwrap().remove(&id);
+                let ui_done = ui_auto.clone();
+                let id_done = id.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_done.upgrade() {
+                        ui.set_is_backing_up(false);
+                        if ui.get_active_server_id().as_str() != id_done {
+                            return;
+                        }
+                        match result {
+                            Ok(name) => {
+                                let msg = if ui.get_app_lang() == "tr" {
+                                    format!("{name} otomatik kaydedildi.")
+                                } else {
+                                    format!("{name} saved automatically.")
+                                };
+                                ui.set_world_status(msg.into());
+                            }
+                            Err(e) => ui.set_world_status(e.into()),
+                        }
+                        let backups: slint::ModelRc<BackupItem> = std::rc::Rc::new(slint::VecModel::from(get_backups_of(&id_done))).into();
+                        ui.set_backup_list(backups);
+                    }
+                });
+            }
+        }
+    });
+
     ui.run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn uptime_formats_hours() {
+        assert_eq!(format_uptime(0), "0s");
+        assert_eq!(format_uptime(61), "1m 01s");
+        assert_eq!(format_uptime(3661), "1h 01m");
+    }
+
+    #[test]
+    fn disk_free_is_readable() {
+        let free = disk_free_bytes(Path::new(".")).expect("disk");
+        assert!(free > 0);
+    }
+
+    #[test]
+    fn status_ping_reads_players_and_names() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 256];
+            let _ = sock.read(&mut buf);
+            let json = br#"{"players":{"online":2,"max":8,"sample":[{"name":"Ada","id":"a"},{"name":"Bea","id":"b"}]}}"#;
+            let mut body = Vec::new();
+            write_varint(&mut body, 0);
+            write_varint(&mut body, json.len() as i32);
+            body.extend_from_slice(json);
+            let mut packet = Vec::new();
+            write_varint(&mut packet, body.len() as i32);
+            packet.extend_from_slice(&body);
+            let _ = sock.write_all(&packet);
+        });
+        let status = mc_status(&port.to_string()).expect("status");
+        assert_eq!(status.online, 2);
+        assert_eq!(status.max, 8);
+        assert_eq!(status.names, "Ada, Bea");
+    }
+
+    #[test]
+    fn backup_schedule_rules() {
+        let t0 = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        assert!(!backup_is_due(None, 30, t0));
+        assert!(!backup_is_due(Some(t0), 0, t0 + Duration::from_secs(3600)));
+        assert!(!backup_is_due(Some(t0), 30, t0 + Duration::from_secs(29 * 60)));
+        assert!(backup_is_due(Some(t0), 30, t0 + Duration::from_secs(30 * 60)));
+        assert_eq!(backup_every_min(15), 0);
+        assert_eq!(backup_every_min(60), 60);
+        assert!(!auto_backup_allowed(Some(1024)));
+        assert!(auto_backup_allowed(Some(3 * 1024 * 1024 * 1024)));
+        assert!(auto_backup_allowed(None));
+        assert!(save_finished("... Saved the game\n"));
+        assert!(!save_finished("Saving the game"));
+    }
+
+    #[test]
+    fn auto_backup_zips_world_and_prunes() {
+        let root = std::env::temp_dir().join(format!("panelmc-bak-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let world = root.join("world");
+        fs::create_dir_all(world.join("region")).unwrap();
+        fs::write(world.join("level.dat"), b"level").unwrap();
+        fs::write(world.join("session.lock"), b"lock").unwrap();
+        fs::write(world.join("region").join("r.0.0.mca"), b"chunk").unwrap();
+
+        let name = backup_folders(&root, &["world".into()], "oto", 100).unwrap();
+        assert_eq!(name, "oto-100.zip");
+        let zip_file = File::open(root.join("backups").join(&name)).unwrap();
+        let mut archive = zip::ZipArchive::new(zip_file).unwrap();
+        let mut stored = Vec::new();
+        for i in 0..archive.len() {
+            stored.push(archive.by_index(i).unwrap().name().to_string());
+        }
+        assert!(stored.iter().any(|n| n.ends_with("level.dat")));
+        assert!(stored.iter().any(|n| n.ends_with("r.0.0.mca")));
+        assert!(!stored.iter().any(|n| n.contains("session.lock")));
+
+        for ts in 1..7 {
+            fs::write(root.join("backups").join(format!("oto-{ts}.zip")), b"zip").unwrap();
+        }
+        fs::write(root.join("backups").join("yedek-9.zip"), b"keep").unwrap();
+        let removed = prune_backups(&root, "oto", 5);
+        assert_eq!(removed.len(), 2);
+        assert!(root.join("backups").join("yedek-9.zip").is_file());
+        let left = fs::read_dir(root.join("backups")).unwrap().flatten().filter(|e| {
+            e.file_name().to_string_lossy().starts_with("oto-")
+        }).count();
+        assert_eq!(left, 5);
+        let _ = fs::remove_dir_all(&root);
+    }
 }

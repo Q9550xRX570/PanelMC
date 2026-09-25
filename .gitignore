@@ -1,6 +1,7 @@
 /target
 /target-ui-check
 /runtimes/
+/playit/
 /servers/
 /server/
 /.cache

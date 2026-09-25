@@ -839,6 +839,13 @@ export component MainWindow inherits Window {
     in-out property <bool> show-create-modal: false;
 
     in-out property <bool> server-running: false;
+    in-out property <int> players-online: -1;
+    in-out property <int> players-max: 0;
+    in-out property <string> online-names: "";
+    in-out property <string> uptime-label: "";
+    in-out property <string> disk-label: "";
+    in-out property <bool> disk-low: false;
+    property <string> players-label: players-online >= 0 ? players-online + "/" + players-max : "";
     in-out property <string> server-status: "Durduruldu";
     in-out property <string> server-ip: "127.0.0.1:25565";
     in-out property <string> join-lan: "";
@@ -850,13 +857,20 @@ export component MainWindow inherits Window {
     in-out property <string> cloudflare-token: "";
     callback save-join-dns(string, string);
     callback publish-srv();
-    in-out property <string> app-version: "0.2.0";
+    in-out property <string> app-version: "0.2.1";
     in-out property <bool> update-available: false;
     in-out property <string> update-label: "";
     in-out property <string> update-url: "";
     callback open-update();
     callback copy-text(string);
     callback refresh-join();
+    in-out property <string> playit-status: "";
+    in-out property <string> playit-claim: "";
+    in-out property <string> playit-address: "";
+    in-out property <bool> playit-running: false;
+    callback start-playit();
+    callback stop-playit();
+    callback open-playit-claim();
     in-out property <string> console-text: "[Sistem] Hazır.\n";
     in-out property <bool> console-follow: true;
     in-out property <string> log-file-text: "";
@@ -891,6 +905,8 @@ export component MainWindow inherits Window {
     in-out property <string> world-status: "";
     in-out property <bool> world-optimize: false;
     in-out property <bool> is-backing-up: false;
+    in-out property <int> backup-every: 0;
+    callback set-backup-every(int);
     in-out property <string> cloud-folder: "";
     in-out property <string> cloud-onedrive: "";
     in-out property <string> cloud-gdrive: "";
@@ -974,6 +990,20 @@ export component MainWindow inherits Window {
     callback optimize-world(string, bool);
     callback pick-resource-pack();
 
+    keys := FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if (event.text == Key.F11) {
+                root.full-screen = !root.full-screen;
+                accept
+            } else if (event.text == Key.Escape && root.full-screen) {
+                root.full-screen = false;
+                accept
+            } else {
+                reject
+            }
+        }
+
     VerticalLayout {
         spacing: 0;
 
@@ -1028,7 +1058,7 @@ export component MainWindow inherits Window {
                                 padding-left: 10px; padding-right: 10px;
                                 alignment: center;
                                 Text {
-                                    text: root.server-running ? root.t-online : root.t-offline;
+                                    text: root.server-running ? (root.players-label == "" ? root.t-online : root.t-online + " " + root.players-label) : root.t-offline;
                                     color: #f0f0f0; font-size: 13px; font-weight: 700; font-family: "Play";
                                     vertical-alignment: center;
                                 }
@@ -1038,6 +1068,14 @@ export component MainWindow inherits Window {
                             text: root.update-label;
                             inverted: true; width: 128px; height: 32px;
                             clicked => { root.open-update(); }
+                        }
+                        AtBtn {
+                            text: root.full-screen ? "Esc" : "F11";
+                            inverted: true; width: 52px; height: 32px;
+                            clicked => {
+                                root.full-screen = !root.full-screen;
+                                keys.focus();
+                            }
                         }
                         AtBtn {
                             text: AppTheme.is-dark ? root.t-theme-light : root.t-theme-dark;
@@ -1234,7 +1272,7 @@ export component MainWindow inherits Window {
                                                 PowerIcon { width: 18px; height: 18px; icon-color: #f0f0f0; }
                                             }
                                             Text {
-                                                text: root.server-running ? root.t-online : root.t-offline;
+                                                text: root.server-running ? (root.players-label == "" ? root.t-online : root.t-online + " " + root.players-label) : root.t-offline;
                                                 color: #f0f0f0; font-size: 16px; font-weight: 700; font-family: "Play";
                                                 height: 22px;
                                                 vertical-alignment: center;
@@ -1291,6 +1329,26 @@ export component MainWindow inherits Window {
                                 value: root.ram-amount + " " + root.ram-unit;
                                 action-text: root.t-change;
                                 action-clicked => { root.active-tab = 1; root.load-server-properties(); }
+                            }
+                            if root.online-names != "" : InfoRow {
+                                label: app-lang == "tr" ? "Çevrimiçi" : "Online now";
+                                value: root.online-names;
+                            }
+                            if root.server-running && root.uptime-label != "" : InfoRow {
+                                label: app-lang == "tr" ? "Açık kalma" : "Uptime";
+                                value: root.uptime-label;
+                            }
+                            if root.disk-label != "" : InfoRow {
+                                label: app-lang == "tr" ? "Boş disk" : "Free disk";
+                                value: root.disk-label;
+                            }
+                            if root.disk-low : Rectangle {
+                                height: 36px; vertical-stretch: 0; background: #F62451; border-radius: 2px;
+                                Text {
+                                    text: app-lang == "tr" ? "Disk 2 GB altında. Dünya yedeği al." : "Under 2 GB free. Back up the world.";
+                                    color: #f0f0f0; font-size: 13px; font-weight: 700; font-family: "Play";
+                                    vertical-alignment: center; horizontal-alignment: center;
+                                }
                             }
                         }
                     }
@@ -1968,6 +2026,38 @@ export component MainWindow inherits Window {
                         vertical-stretch: 0;
                         text: root.world-status; color: #1fd78d; font-size: 12px; font-weight: 700; font-family: "Play";
                     }
+                    HorizontalLayout {
+                        vertical-stretch: 0; spacing: 8px;
+                        AtBtn {
+                            text: app-lang == "tr" ? "Kapalı" : "Off";
+                            success: root.backup-every == 0; inverted: root.backup-every != 0; width: 72px; height: 32px;
+                            clicked => { root.backup-every = 0; root.set-backup-every(0); }
+                        }
+                        AtBtn {
+                            text: app-lang == "tr" ? "30 dk" : "30m";
+                            success: root.backup-every == 30; inverted: root.backup-every != 30; width: 72px; height: 32px;
+                            clicked => { root.backup-every = 30; root.set-backup-every(30); }
+                        }
+                        AtBtn {
+                            text: app-lang == "tr" ? "1 sa" : "1h";
+                            success: root.backup-every == 60; inverted: root.backup-every != 60; width: 72px; height: 32px;
+                            clicked => { root.backup-every = 60; root.set-backup-every(60); }
+                        }
+                        AtBtn {
+                            text: app-lang == "tr" ? "6 sa" : "6h";
+                            success: root.backup-every == 360; inverted: root.backup-every != 360; width: 72px; height: 32px;
+                            clicked => { root.backup-every = 360; root.set-backup-every(360); }
+                        }
+                    }
+                    Text {
+                        vertical-stretch: 0;
+                        text: root.backup-every == 0
+                            ? (app-lang == "tr" ? "Otomatik yedek kapalı." : "Automatic backup is off.")
+                            : (app-lang == "tr"
+                                ? "Sunucu açıkken bu aralıkta kayıt alınıp zip'lenir. Son 5 otomatik yedek kalır."
+                                : "While the server is on, worlds are saved and zipped on this interval. The last 5 automatic backups are kept.");
+                        color: root.c-text-secondary; font-size: 12px; font-family: "Play"; wrap: word-wrap;
+                    }
                     Rectangle {
                         vertical-stretch: 1;
                         background: root.c-bg-card; border-radius: 2px;
@@ -2061,6 +2151,30 @@ export component MainWindow inherits Window {
                                     primary: true; width: 72px; height: 32px;
                                     clicked => { root.save-join-dns(root.join-host, root.cloudflare-token); root.publish-srv(); }
                                 }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        vertical-stretch: 0;
+                        background: root.c-bg-card;
+                        border-radius: 2px;
+                        VerticalLayout {
+                            padding: 14px; spacing: 6px;
+                            Text { text: "Playit"; font-size: 16px; font-weight: 700; font-family: "Play"; color: #f0f0f0; }
+                            Text { text: root.playit-status; font-size: 12px; font-family: "Play"; color: root.c-text-secondary; wrap: word-wrap; }
+                            if root.playit-claim != "" : Text { text: root.playit-claim; font-size: 12px; font-weight: 700; font-family: "Play"; color: #2b87d3; wrap: word-wrap; }
+                            if root.playit-address != "" : Text { text: root.playit-address; font-size: 16px; font-weight: 700; font-family: "Play"; color: #1fd78d; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                AtBtn {
+                                    text: root.playit-running ? (app-lang == "tr" ? "Tüneli durdur" : "Stop tunnel") : (app-lang == "tr" ? "Tüneli başlat" : "Start tunnel");
+                                    primary: !root.playit-running;
+                                    dark: root.playit-running;
+                                    height: 32px;
+                                    clicked => { if (root.playit-running) { root.stop-playit(); } else { root.start-playit(); } }
+                                }
+                                if root.playit-claim != "" : AtBtn { text: app-lang == "tr" ? "Hesabı bağla" : "Claim"; dark: true; width: 110px; height: 32px; clicked => { root.open-playit-claim(); } }
+                                if root.playit-address != "" : AtBtn { text: app-lang == "tr" ? "Kopyala" : "Copy"; dark: true; width: 78px; height: 28px; clicked => { root.copy-text(root.playit-address); } }
                             }
                         }
                     }
@@ -2423,5 +2537,6 @@ export component MainWindow inherits Window {
                 }
             }
         }
+    }
     }
 }
